@@ -23,7 +23,7 @@ BOT_OPEN_ID = os.environ.get("BOT_OPEN_ID", "")
 
 # AWS Bedrock 配置
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
-BEDROCK_MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-20250514")
+BEDROCK_MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-20250514-v1:0")
 AWS_BEARER_TOKEN = os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "")
 
 
@@ -44,7 +44,8 @@ def generate_reply(content: str, sender_id: str, chat_type: str) -> str:
         return "抱歉，我暂时无法处理这条消息，稍后 Ethan 会回复你。"
 
     try:
-        url = f"https://bedrock-runtime.{AWS_REGION}.amazonaws.com/model/{BEDROCK_MODEL_ID}/converse"
+        model_path = BEDROCK_MODEL_ID.replace(":", "%3A")
+        url = f"https://bedrock-runtime.{AWS_REGION}.amazonaws.com/model/{model_path}/converse"
 
         payload = {
             "system": [{"text": get_system_prompt()}],

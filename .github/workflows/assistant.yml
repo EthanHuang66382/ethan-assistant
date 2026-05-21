@@ -39,6 +39,6 @@ jobs:
           LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
           AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
           AWS_REGION: us-east-1
-          BEDROCK_MODEL_ID: us.anthropic.claude-sonnet-4-20250514
+          BEDROCK_MODEL_ID: us.anthropic.claude-sonnet-4-20250514-v1:0
           BOT_OPEN_ID: ${{ vars.BOT_OPEN_ID || '' }}
         run: python3 assistant.py
