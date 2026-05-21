@@ -1,1 +1,1 @@
-boto3>=1.34.0
+# No external dependencies — uses only stdlib (urllib, json)

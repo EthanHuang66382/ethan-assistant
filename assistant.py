@@ -2,6 +2,7 @@
 """Ethan Assistant — 飞书对话服务
 
 监听飞书消息，用 AWS Bedrock Claude 生成回复。
+支持 Bearer Token 认证（AWS_BEARER_TOKEN_BEDROCK）。
 """
 
 import json
@@ -10,9 +11,9 @@ import subprocess
 import sys
 import signal
 import time
+import urllib.request
+import urllib.error
 from pathlib import Path
-
-import boto3
 
 SCRIPT_DIR = Path(__file__).parent
 SYSTEM_PROMPT_FILE = SCRIPT_DIR / "system_prompt.txt"
@@ -22,7 +23,8 @@ BOT_OPEN_ID = os.environ.get("BOT_OPEN_ID", "")
 
 # AWS Bedrock 配置
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
-BEDROCK_MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-sonnet-4-20250514")
+BEDROCK_MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-20250514")
+AWS_BEARER_TOKEN = os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "")
 
 
 def log(msg: str):
@@ -36,22 +38,42 @@ def get_system_prompt() -> str:
 
 
 def generate_reply(content: str, sender_id: str, chat_type: str) -> str:
-    """调用 AWS Bedrock Claude 生成回复"""
-    try:
-        client = boto3.client("bedrock-runtime", region_name=AWS_REGION)
+    """调用 AWS Bedrock Claude 生成回复（Bearer Token 认证）"""
+    if not AWS_BEARER_TOKEN:
+        log("ERROR: AWS_BEARER_TOKEN_BEDROCK not set")
+        return "抱歉，我暂时无法处理这条消息，稍后 Ethan 会回复你。"
 
-        response = client.converse(
-            modelId=BEDROCK_MODEL_ID,
-            system=[{"text": get_system_prompt()}],
-            messages=[
+    try:
+        url = f"https://bedrock-runtime.{AWS_REGION}.amazonaws.com/model/{BEDROCK_MODEL_ID}/converse"
+
+        payload = {
+            "system": [{"text": get_system_prompt()}],
+            "messages": [
                 {"role": "user", "content": [{"text": content}]}
             ],
-            inferenceConfig={"maxTokens": 1024, "temperature": 0.7},
+            "inferenceConfig": {"maxTokens": 1024, "temperature": 0.7},
+        }
+
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {AWS_BEARER_TOKEN}",
+            },
+            method="POST",
         )
 
-        reply = response["output"]["message"]["content"][0]["text"]
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            result = json.loads(resp.read())
+
+        reply = result["output"]["message"]["content"][0]["text"]
         return reply.strip()
 
+    except urllib.error.HTTPError as e:
+        body = e.read().decode() if e.fp else ""
+        log(f"ERROR: Bedrock HTTP {e.code}: {body[:200]}")
+        return "抱歉，我暂时无法处理这条消息，稍后 Ethan 会回复你。"
     except Exception as e:
         log(f"ERROR: Bedrock call failed: {e}")
         return "抱歉，我暂时无法处理这条消息，稍后 Ethan 会回复你。"
