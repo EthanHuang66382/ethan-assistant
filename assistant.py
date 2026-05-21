@@ -46,10 +46,10 @@ CALENDAR_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
+# Aaron = Aaron + Jackson Li 合并视为一个人
 PERSON_PATTERNS = {
     "ethan": re.compile(r"(ethan|我的|你的|老板)", re.IGNORECASE),
-    "aaron": re.compile(r"(aaron)", re.IGNORECASE),
-    "jackson": re.compile(r"(jackson|li)", re.IGNORECASE),
+    "aaron": re.compile(r"(aaron|jackson|li)", re.IGNORECASE),
 }
 
 
@@ -144,9 +144,20 @@ def get_calendar_context(content: str) -> str:
 
     results = []
     for key in targets:
-        user = USERS[key]
-        freebusy = query_freebusy(user["open_id"], date_str)
-        results.append(f"【{user['name']} 在 {date_str} 的忙碌时段】\n{freebusy}")
+        if key == "aaron":
+            # Aaron = Aaron + Jackson Li 合并查询
+            freebusy_aaron = query_freebusy(USERS["aaron"]["open_id"], date_str)
+            freebusy_jackson = query_freebusy(USERS["jackson"]["open_id"], date_str)
+            results.append(
+                f"【Aaron 在 {date_str} 的忙碌时段】\n"
+                f"(Aaron 账号): {freebusy_aaron}\n"
+                f"(Jackson Li 账号): {freebusy_jackson}\n"
+                f"注意：以上两个账号都是 Aaron 的，需要合并看所有忙碌时段。"
+            )
+        else:
+            user = USERS[key]
+            freebusy = query_freebusy(user["open_id"], date_str)
+            results.append(f"【{user['name']} 在 {date_str} 的忙碌时段】\n{freebusy}")
 
     return "\n\n".join(results)
 
