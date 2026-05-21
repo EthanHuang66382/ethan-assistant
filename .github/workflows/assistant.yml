@@ -1,0 +1,48 @@
+name: Ethan Assistant
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 每 5 小时自动重启（GitHub Actions 最长 6 小时）
+    # UTC 01:00, 06:00, 11:00, 16:00, 21:00
+    - cron: '0 1,6,11,16,21 * * *'
+
+concurrency:
+  group: ethan-assistant
+  cancel-in-progress: true
+
+jobs:
+  assistant:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350  # ~5.8 小时，留一点余量
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install lark-cli
+        run: npm install -g @larksuite/cli
+
+      - name: Configure lark-cli
+        run: echo "${{ secrets.LARK_APP_SECRET }}" | lark-cli config init --app-id "${{ secrets.LARK_APP_ID }}" --app-secret-stdin --brand lark
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install boto3
+
+      - name: Run Ethan Assistant
+        env:
+          LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
+          LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          BEDROCK_MODEL_ID: ${{ vars.BEDROCK_MODEL_ID || 'anthropic.claude-sonnet-4-20250514' }}
+          BOT_OPEN_ID: ${{ vars.BOT_OPEN_ID || '' }}
+        run: python3 assistant.py
