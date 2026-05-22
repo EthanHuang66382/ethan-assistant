@@ -54,9 +54,11 @@ CHAT_SUMMARY_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
-CHAT_NAME_PATTERN = re.compile(
-    r"[「「\"](.+?)[」」\"]|群[:\s]*(.+?)[\s的]",
-)
+CHAT_NAME_PATTERNS = [
+    re.compile(r"[「「\"【](.+?)[」」\"】]"),
+    re.compile(r"([\w一-鿿]+?)(?:群里|群的|这个群)"),
+    re.compile(r"群[:\s「「\"]*(.+?)[\s」」\"的里]"),
+]
 
 # 人名匹配：Aaron = Aaron + Jackson Li，Thomas = Thomas Chang + Deric Chan
 PERSON_PATTERNS = {
@@ -326,18 +328,38 @@ def fetch_chat_messages(chat_id: str, limit: int = 50) -> list[str]:
     return []
 
 
+def extract_chat_name(content: str) -> str | None:
+    """从消息中提取群名"""
+    # 优先匹配引号/括号包裹的群名
+    m = CHAT_NAME_PATTERNS[0].search(content)
+    if m:
+        return m.group(1).strip()
+
+    # 去掉所有指令性词汇，留下群名部分
+    cleaned = content.replace("\n", " ")
+    noise_words = [
+        "帮我", "请", "麻烦", "总结一下", "总结", "摘要", "概括",
+        "查看", "看看", "看下", "一下", "这个", "群里的", "群里",
+        "群的", "群聊", "近期", "最近", "近一周", "本周", "上周",
+        "消息", "信息", "内容", "聊天记录", "的",
+    ]
+    for word in noise_words:
+        cleaned = cleaned.replace(word, " ")
+    cleaned = cleaned.strip()
+    # 取最长的连续非空片段
+    parts = [p.strip() for p in cleaned.split() if p.strip()]
+    if parts:
+        longest = max(parts, key=len)
+        if len(longest) >= 2:
+            return longest
+    return None
+
+
 def detect_chat_summary(content: str) -> str | None:
     """检测是否是群聊总结请求，返回群名关键词"""
     if not CHAT_SUMMARY_KEYWORDS.search(content):
         return None
-    m = CHAT_NAME_PATTERN.search(content)
-    if m:
-        return m.group(1) or m.group(2)
-    # 尝试直接匹配可能的群名
-    for word in content.split():
-        if len(word) >= 2 and word not in ("总结", "摘要", "一下", "这个", "群里", "近期", "最近", "帮我"):
-            return word
-    return None
+    return extract_chat_name(content)
 
 
 def get_chat_summary_context(content: str) -> str:
