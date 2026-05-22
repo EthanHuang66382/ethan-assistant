@@ -63,8 +63,8 @@ def get_system_prompt() -> str:
     return "你是 Ethan Huang 的 AI 助理。请用专业友善的语气回复消息。如果不确定如何回答，可以告知对方你会转达给 Ethan。回复请简洁明了。"
 
 
-def query_freebusy(user_id: str, start_date: str, end_date: str) -> str:
-    """查询指定用户的忙闲信息，支持日期范围"""
+def query_freebusy_raw(user_id: str, start_date: str, end_date: str) -> list:
+    """查询指定用户的忙闲信息，返回解析后的时段列表"""
     cmd = [LARK_CLI, "calendar", "+freebusy",
            "--user-id", user_id,
            "--start", start_date,
@@ -75,11 +75,78 @@ def query_freebusy(user_id: str, start_date: str, end_date: str) -> str:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
             log(f"ERROR: freebusy query failed: {result.stderr}")
-            return f"查询失败: {result.stderr[:100]}"
-        return result.stdout.strip()
+            return []
+        data = json.loads(result.stdout)
+        if data.get("ok") and "data" in data:
+            return data["data"]
+        return []
     except Exception as e:
         log(f"ERROR: freebusy exception: {e}")
-        return f"查询异常: {e}"
+        return []
+
+
+def parse_utc_to_local(utc_str: str, offset_hours: int = 8) -> datetime:
+    """将 UTC 时间字符串转为本地时间"""
+    dt = datetime.strptime(utc_str, "%Y-%m-%dT%H:%M:%SZ")
+    return dt + timedelta(hours=offset_hours)
+
+
+def merge_time_slots(slots: list[tuple[datetime, datetime]]) -> list[tuple[datetime, datetime]]:
+    """合并重叠和相邻的时段"""
+    if not slots:
+        return []
+    slots.sort(key=lambda x: x[0])
+    merged = [slots[0]]
+    for start, end in slots[1:]:
+        if start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def format_freebusy(raw_slots: list, offset_hours: int = 8) -> str:
+    """将原始 freebusy JSON 数据处理为人类可读的 UTC+8 格式，去重并合并"""
+    if not raw_slots:
+        return "无忙碌时段（全天空闲）"
+
+    # 去重：用 (start, end) 元组做 set
+    seen = set()
+    slots = []
+    for item in raw_slots:
+        start_utc = item.get("start_time", "")
+        end_utc = item.get("end_time", "")
+        if not start_utc or not end_utc:
+            continue
+        key = (start_utc, end_utc)
+        if key in seen:
+            continue
+        seen.add(key)
+        start_local = parse_utc_to_local(start_utc, offset_hours)
+        end_local = parse_utc_to_local(end_utc, offset_hours)
+        slots.append((start_local, end_local))
+
+    # 合并相邻/重叠时段
+    merged = merge_time_slots(slots)
+
+    # 按日期分组输出
+    from collections import OrderedDict
+    weekday_names = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+    days: dict[str, list[str]] = OrderedDict()
+    for start, end in merged:
+        date_key = start.strftime("%Y-%m-%d")
+        wd = weekday_names[start.weekday()]
+        label = f"{date_key}（{wd}）"
+        time_range = f"{start.strftime('%H:%M')}-{end.strftime('%H:%M')}"
+        if label not in days:
+            days[label] = []
+        days[label].append(time_range)
+
+    lines = []
+    for day_label, times in days.items():
+        lines.append(f"{day_label}: {', '.join(times)}")
+
+    return "\n".join(lines) + "\n(时区: UTC+8)"
 
 
 def parse_date_range_from_message(content: str) -> tuple[str, str]:
@@ -183,7 +250,7 @@ def detect_calendar_query(content: str) -> list:
 
 
 def get_calendar_context(content: str) -> str:
-    """根据消息内容查询日历信息，返回上下文"""
+    """根据消息内容查询日历信息，返回上下文（已预处理为 UTC+8 并合并）"""
     targets = detect_calendar_query(content)
     if not targets:
         return ""
@@ -195,18 +262,17 @@ def get_calendar_context(content: str) -> str:
     results = []
     for key in targets:
         if key == "aaron":
-            freebusy_aaron = query_freebusy(USERS["aaron"]["open_id"], start_date, end_date)
-            freebusy_jackson = query_freebusy(USERS["jackson"]["open_id"], start_date, end_date)
-            results.append(
-                f"【Aaron 在 {date_label} 的忙碌时段】\n"
-                f"(Aaron 账号): {freebusy_aaron}\n"
-                f"(Jackson Li 账号): {freebusy_jackson}\n"
-                f"注意：以上两个账号都是 Aaron 的，需要合并看所有忙碌时段。"
-            )
+            # 合并 Aaron + Jackson Li 两个账号的时段
+            slots_aaron = query_freebusy_raw(USERS["aaron"]["open_id"], start_date, end_date)
+            slots_jackson = query_freebusy_raw(USERS["jackson"]["open_id"], start_date, end_date)
+            all_slots = slots_aaron + slots_jackson
+            formatted = format_freebusy(all_slots)
+            results.append(f"【Aaron 在 {date_label} 的忙碌时段】\n{formatted}")
         else:
             user = USERS[key]
-            freebusy = query_freebusy(user["open_id"], start_date, end_date)
-            results.append(f"【{user['name']} 在 {date_label} 的忙碌时段】\n{freebusy}")
+            slots = query_freebusy_raw(user["open_id"], start_date, end_date)
+            formatted = format_freebusy(slots)
+            results.append(f"【{user['name']} 在 {date_label} 的忙碌时段】\n{formatted}")
 
     return "\n\n".join(results)
 
