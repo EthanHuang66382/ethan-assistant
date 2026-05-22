@@ -63,11 +63,13 @@ def get_system_prompt() -> str:
     return "你是 Ethan Huang 的 AI 助理。请用专业友善的语气回复消息。如果不确定如何回答，可以告知对方你会转达给 Ethan。回复请简洁明了。"
 
 
-def query_freebusy(user_id: str, date_str: str = None) -> str:
-    """查询指定用户的忙闲信息"""
-    cmd = [LARK_CLI, "calendar", "+freebusy", "--user-id", user_id, "--as", "bot"]
-    if date_str:
-        cmd.extend(["--start", date_str, "--end", date_str])
+def query_freebusy(user_id: str, start_date: str, end_date: str) -> str:
+    """查询指定用户的忙闲信息，支持日期范围"""
+    cmd = [LARK_CLI, "calendar", "+freebusy",
+           "--user-id", user_id,
+           "--start", start_date,
+           "--end", end_date,
+           "--as", "bot"]
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
@@ -80,16 +82,59 @@ def query_freebusy(user_id: str, date_str: str = None) -> str:
         return f"查询异常: {e}"
 
 
-def parse_date_from_message(content: str) -> str:
-    """从消息中提取日期，默认今天"""
+def parse_date_range_from_message(content: str) -> tuple[str, str]:
+    """从消息中提取日期范围 (start, end)，支持单日和多日范围，最多一个月"""
     today = datetime.now()
 
+    # 范围表达式
+    if re.search(r"这[个]?月|本月|this month", content, re.IGNORECASE):
+        start = today.replace(day=1)
+        next_month = (start + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+        return start.strftime("%Y-%m-%d"), next_month.strftime("%Y-%m-%d")
+
+    if re.search(r"下[个]?月|next month", content, re.IGNORECASE):
+        first_next = (today.replace(day=1) + timedelta(days=32)).replace(day=1)
+        last_next = (first_next + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+        return first_next.strftime("%Y-%m-%d"), last_next.strftime("%Y-%m-%d")
+
+    if re.search(r"这[个]?周|本周|this week", content, re.IGNORECASE):
+        start = today - timedelta(days=today.weekday())
+        end = start + timedelta(days=6)
+        return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+
+    if re.search(r"下[个]?周|next week", content, re.IGNORECASE):
+        start = today - timedelta(days=today.weekday()) + timedelta(weeks=1)
+        end = start + timedelta(days=6)
+        return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+
+    m = re.search(r"未来(\d+)[天日]|接下来(\d+)[天日]|next (\d+) days?", content, re.IGNORECASE)
+    if m:
+        days = int(m.group(1) or m.group(2) or m.group(3))
+        days = min(days, 30)
+        return today.strftime("%Y-%m-%d"), (today + timedelta(days=days - 1)).strftime("%Y-%m-%d")
+
+    m = re.search(r"未来(\d+)[周]|接下来(\d+)[周]|next (\d+) weeks?", content, re.IGNORECASE)
+    if m:
+        weeks = int(m.group(1) or m.group(2) or m.group(3))
+        weeks = min(weeks, 4)
+        return today.strftime("%Y-%m-%d"), (today + timedelta(weeks=weeks) - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    if re.search(r"未来一[个]?月|接下来一[个]?月", content):
+        return today.strftime("%Y-%m-%d"), (today + timedelta(days=29)).strftime("%Y-%m-%d")
+
+    if re.search(r"一周|一个星期|7天", content):
+        return today.strftime("%Y-%m-%d"), (today + timedelta(days=6)).strftime("%Y-%m-%d")
+
+    # 单日表达式
     if re.search(r"明天|明日|tomorrow", content, re.IGNORECASE):
-        return (today + timedelta(days=1)).strftime("%Y-%m-%d")
+        d = (today + timedelta(days=1)).strftime("%Y-%m-%d")
+        return d, d
     if re.search(r"后天", content):
-        return (today + timedelta(days=2)).strftime("%Y-%m-%d")
+        d = (today + timedelta(days=2)).strftime("%Y-%m-%d")
+        return d, d
     if re.search(r"昨天|昨日|yesterday", content, re.IGNORECASE):
-        return (today - timedelta(days=1)).strftime("%Y-%m-%d")
+        d = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+        return d, d
 
     # 匹配周几
     weekday_map = {"一": 0, "二": 1, "三": 2, "四": 3, "五": 4, "六": 5, "日": 6, "天": 6}
@@ -103,17 +148,21 @@ def parse_date_from_message(content: str) -> str:
             days_ahead += 7
         elif days_ahead <= 0:
             days_ahead += 7
-        return (today + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+        d = (today + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+        return d, d
 
     # 匹配具体日期 YYYY-MM-DD 或 MM-DD
     m = re.search(r"(\d{4})-(\d{1,2})-(\d{1,2})", content)
     if m:
-        return m.group(0)
+        return m.group(0), m.group(0)
     m = re.search(r"(\d{1,2})[月/](\d{1,2})[日号]?", content)
     if m:
-        return f"{today.year}-{int(m.group(1)):02d}-{int(m.group(2)):02d}"
+        d = f"{today.year}-{int(m.group(1)):02d}-{int(m.group(2)):02d}"
+        return d, d
 
-    return today.strftime("%Y-%m-%d")
+    # 默认今天
+    d = today.strftime("%Y-%m-%d")
+    return d, d
 
 
 def detect_calendar_query(content: str) -> list:
@@ -139,25 +188,25 @@ def get_calendar_context(content: str) -> str:
     if not targets:
         return ""
 
-    date_str = parse_date_from_message(content)
-    log(f"CALENDAR: querying {targets} for {date_str}")
+    start_date, end_date = parse_date_range_from_message(content)
+    date_label = start_date if start_date == end_date else f"{start_date} ~ {end_date}"
+    log(f"CALENDAR: querying {targets} for {date_label}")
 
     results = []
     for key in targets:
         if key == "aaron":
-            # Aaron = Aaron + Jackson Li 合并查询
-            freebusy_aaron = query_freebusy(USERS["aaron"]["open_id"], date_str)
-            freebusy_jackson = query_freebusy(USERS["jackson"]["open_id"], date_str)
+            freebusy_aaron = query_freebusy(USERS["aaron"]["open_id"], start_date, end_date)
+            freebusy_jackson = query_freebusy(USERS["jackson"]["open_id"], start_date, end_date)
             results.append(
-                f"【Aaron 在 {date_str} 的忙碌时段】\n"
+                f"【Aaron 在 {date_label} 的忙碌时段】\n"
                 f"(Aaron 账号): {freebusy_aaron}\n"
                 f"(Jackson Li 账号): {freebusy_jackson}\n"
                 f"注意：以上两个账号都是 Aaron 的，需要合并看所有忙碌时段。"
             )
         else:
             user = USERS[key]
-            freebusy = query_freebusy(user["open_id"], date_str)
-            results.append(f"【{user['name']} 在 {date_str} 的忙碌时段】\n{freebusy}")
+            freebusy = query_freebusy(user["open_id"], start_date, end_date)
+            results.append(f"【{user['name']} 在 {date_label} 的忙碌时段】\n{freebusy}")
 
     return "\n\n".join(results)
 
