@@ -236,12 +236,29 @@ def parse_date_range_from_message(content: str) -> tuple[str, str]:
         d = (today - timedelta(days=1)).strftime("%Y-%m-%d")
         return d, d
 
-    # 匹配周几
+    # 匹配中文周几
     weekday_map = {"一": 0, "二": 1, "三": 2, "四": 3, "五": 4, "六": 5, "日": 6, "天": 6}
     m = re.search(r"(下)?周([一二三四五六日天])", content)
     if m:
         next_week = m.group(1) is not None
         target_wd = weekday_map[m.group(2)]
+        current_wd = today.weekday()
+        days_ahead = target_wd - current_wd
+        if next_week:
+            days_ahead += 7
+        elif days_ahead <= 0:
+            days_ahead += 7
+        d = (today + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+        return d, d
+
+    # 匹配英文星期
+    en_weekday_map = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+                      "friday": 4, "saturday": 5, "sunday": 6,
+                      "mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+    m = re.search(r"(next\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|wed|thu|fri|sat|sun)", content, re.IGNORECASE)
+    if m:
+        next_week = m.group(1) is not None
+        target_wd = en_weekday_map[m.group(2).lower()]
         current_wd = today.weekday()
         days_ahead = target_wd - current_wd
         if next_week:
