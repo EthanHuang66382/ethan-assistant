@@ -46,11 +46,6 @@ CALENDAR_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
-RELAY_KEYWORDS = re.compile(
-    r"(转达|转告|告诉ethan|通知ethan|让ethan知道|麻烦告知ethan|帮我跟ethan说)",
-    re.IGNORECASE,
-)
-
 # Aaron = Aaron + Jackson Li 合并视为一个人
 PERSON_PATTERNS = {
     "ethan": re.compile(r"(ethan|我的|你的|老板)", re.IGNORECASE),
@@ -491,18 +486,18 @@ def process_event(event: dict):
     # 对话上下文 key：私聊按 sender_id，群聊按 chat_id
     conv_key = sender_id if chat_type == "p2p" else chat_id
 
-    # 检测转达意图
-    if RELAY_KEYWORDS.search(content):
-        log(f"RELAY: detected relay intent from {sender_id}")
-        notify_ethan(sender_id, chat_type, chat_id, content, conv_key)
-        send_reply(message_id, "好的，我已经将你的消息转达给 Ethan，他会尽快查看。")
-        return
-
     reply = generate_reply(content, sender_id, chat_type, conv_key)
 
     if reply:
-        log(f"REPLY: {reply[:80]}...")
-        send_reply(message_id, reply)
+        # 检测 AI 是否决定转达（回复中包含 [RELAY] 标记）
+        if "[RELAY]" in reply:
+            reply_clean = reply.replace("[RELAY]", "").strip()
+            log(f"RELAY: AI decided to relay, from {sender_id}")
+            notify_ethan(sender_id, chat_type, chat_id, content, conv_key)
+            send_reply(message_id, reply_clean)
+        else:
+            log(f"REPLY: {reply[:80]}...")
+            send_reply(message_id, reply)
 
 
 def main():
