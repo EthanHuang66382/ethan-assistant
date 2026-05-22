@@ -224,9 +224,14 @@ def generate_reply(content: str, sender_id: str, chat_type: str, conv_key: str) 
         model_path = BEDROCK_MODEL_ID.replace(":", "%3A")
         url = f"https://bedrock-runtime.{AWS_REGION}.amazonaws.com/model/{model_path}/converse"
 
+        today = datetime.now()
+        weekday_names = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+        today_info = f"今天是 {today.strftime('%Y-%m-%d')} {weekday_names[today.weekday()]}"
+
         system_prompt = get_system_prompt()
+        system_prompt += f"\n\n## 当前时间\n{today_info}"
         if calendar_context:
-            system_prompt += f"\n\n## 日历查询结果（实时数据）\n\n{calendar_context}\n\n请基于以上数据回答用户的日历相关问题。只需告知哪些时间段被占用即可，格式简洁。"
+            system_prompt += f"\n\n## 日历查询结果（实时数据）\n\n{calendar_context}\n\n请基于以上数据回答用户的日历相关问题。只需告知哪些时间段被占用即可，格式简洁。注意：标注星期几时请根据日期准确计算，不要猜测。"
 
         # 构建含历史的消息列表
         messages = list(conversation_history[conv_key])
