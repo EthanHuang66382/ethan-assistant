@@ -383,15 +383,73 @@ def send_reply(message_id: str, reply_text: str):
         log(f"ERROR: send_reply exception: {e}")
 
 
-def notify_ethan(sender_id: str, chat_type: str, chat_id: str, content: str):
-    """转达消息给 Ethan：发一条私信通知"""
-    ethan_open_id = USERS["ethan"]["open_id"]
-    source = f"群聊 {chat_id}" if chat_type != "p2p" else f"私聊用户 {sender_id}"
-    msg = f"[转达通知]\n来源: {source}\n发送者: {sender_id}\n内容: {content}"
+RELAY_CHAT_ID = os.environ.get("RELAY_CHAT_ID", "oc_36a5dcbe3d2c02c32e31c817da7b92db")
+
+
+def get_user_name(open_id: str) -> str:
+    """通过 open_id 查询用户姓名"""
+    try:
+        result = subprocess.run(
+            [LARK_CLI, "contact", "+get-user",
+             "--user-id", open_id,
+             "--as", "bot"],
+            capture_output=True, text=True, timeout=15
+        )
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            return data.get("data", {}).get("user", {}).get("name", open_id)
+    except Exception:
+        pass
+    return open_id
+
+
+def summarize_for_relay(content: str, conv_key: str) -> str:
+    """用 AI 解析对话上下文，生成转达摘要"""
+    if not AWS_BEARER_TOKEN:
+        return content
+
+    try:
+        model_path = BEDROCK_MODEL_ID.replace(":", "%3A")
+        url = f"https://bedrock-runtime.{AWS_REGION}.amazonaws.com/model/{model_path}/converse"
+
+        history = list(conversation_history[conv_key])
+        history.append({"role": "user", "content": [{"text": content}]})
+
+        payload = {
+            "system": [{"text": "你是一个消息摘要助手。请根据对话上下文，用 1-3 句话总结对方想要转达给 Ethan 的核心内容。只输出摘要，不要加前缀或解释。如果上下文不足，就直接用原始消息内容。"}],
+            "messages": history,
+            "inferenceConfig": {"maxTokens": 256, "temperature": 0.3},
+        }
+
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {AWS_BEARER_TOKEN}",
+            },
+            method="POST",
+        )
+
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read())
+
+        return result["output"]["message"]["content"][0]["text"].strip()
+    except Exception as e:
+        log(f"ERROR: summarize_for_relay failed: {e}")
+        return content
+
+
+def notify_ethan(sender_id: str, chat_type: str, chat_id: str, content: str, conv_key: str):
+    """转达消息给 Ethan：AI 摘要后发到 Ethan Assistant Group"""
+    sender_name = get_user_name(sender_id)
+    summary = summarize_for_relay(content, conv_key)
+    source = f"群聊" if chat_type != "p2p" else "私聊"
+    msg = f"[转达通知]\n来自: {sender_name}（{source}）\n内容: {summary}"
     try:
         result = subprocess.run(
             [LARK_CLI, "im", "+messages-send",
-             "--user-id", ethan_open_id,
+             "--chat-id", RELAY_CHAT_ID,
              "--text", msg,
              "--as", "bot"],
             capture_output=True, text=True, timeout=30
@@ -399,7 +457,7 @@ def notify_ethan(sender_id: str, chat_type: str, chat_id: str, content: str):
         if result.returncode != 0:
             log(f"ERROR: notify_ethan failed: {result.stderr}")
         else:
-            log(f"NOTIFY: forwarded to Ethan from {sender_id}")
+            log(f"NOTIFY: forwarded to Ethan from {sender_name}")
     except Exception as e:
         log(f"ERROR: notify_ethan exception: {e}")
 
@@ -430,15 +488,15 @@ def process_event(event: dict):
 
     log(f"RECV: [{chat_type}] from={sender_id} type={message_type} msg_id={message_id} content={content[:80]}")
 
+    # 对话上下文 key：私聊按 sender_id，群聊按 chat_id
+    conv_key = sender_id if chat_type == "p2p" else chat_id
+
     # 检测转达意图
     if RELAY_KEYWORDS.search(content):
         log(f"RELAY: detected relay intent from {sender_id}")
-        notify_ethan(sender_id, chat_type, chat_id, content)
+        notify_ethan(sender_id, chat_type, chat_id, content, conv_key)
         send_reply(message_id, "好的，我已经将你的消息转达给 Ethan，他会尽快查看。")
         return
-
-    # 对话上下文 key：私聊按 sender_id，群聊按 chat_id
-    conv_key = sender_id if chat_type == "p2p" else chat_id
 
     reply = generate_reply(content, sender_id, chat_type, conv_key)
 
