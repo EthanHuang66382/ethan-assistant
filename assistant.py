@@ -46,6 +46,11 @@ CALENDAR_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
+RELAY_KEYWORDS = re.compile(
+    r"(转达|转告|告诉ethan|通知ethan|让ethan知道|麻烦告知ethan|帮我跟ethan说)",
+    re.IGNORECASE,
+)
+
 # Aaron = Aaron + Jackson Li 合并视为一个人
 PERSON_PATTERNS = {
     "ethan": re.compile(r"(ethan|我的|你的|老板)", re.IGNORECASE),
@@ -378,6 +383,27 @@ def send_reply(message_id: str, reply_text: str):
         log(f"ERROR: send_reply exception: {e}")
 
 
+def notify_ethan(sender_id: str, chat_type: str, chat_id: str, content: str):
+    """转达消息给 Ethan：发一条私信通知"""
+    ethan_open_id = USERS["ethan"]["open_id"]
+    source = f"群聊 {chat_id}" if chat_type != "p2p" else f"私聊用户 {sender_id}"
+    msg = f"[转达通知]\n来源: {source}\n发送者: {sender_id}\n内容: {content}"
+    try:
+        result = subprocess.run(
+            [LARK_CLI, "im", "+messages-send",
+             "--user-id", ethan_open_id,
+             "--text", msg,
+             "--as", "bot"],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.returncode != 0:
+            log(f"ERROR: notify_ethan failed: {result.stderr}")
+        else:
+            log(f"NOTIFY: forwarded to Ethan from {sender_id}")
+    except Exception as e:
+        log(f"ERROR: notify_ethan exception: {e}")
+
+
 def process_event(event: dict):
     """处理单条消息事件"""
     sender_id = event.get("sender_id", "")
@@ -403,6 +429,13 @@ def process_event(event: dict):
         return
 
     log(f"RECV: [{chat_type}] from={sender_id} type={message_type} msg_id={message_id} content={content[:80]}")
+
+    # 检测转达意图
+    if RELAY_KEYWORDS.search(content):
+        log(f"RELAY: detected relay intent from {sender_id}")
+        notify_ethan(sender_id, chat_type, chat_id, content)
+        send_reply(message_id, "好的，我已经将你的消息转达给 Ethan，他会尽快查看。")
+        return
 
     # 对话上下文 key：私聊按 sender_id，群聊按 chat_id
     conv_key = sender_id if chat_type == "p2p" else chat_id
