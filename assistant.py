@@ -35,6 +35,9 @@ USERS = {
     "ethan": {"name": "Ethan Huang", "open_id": "ou_698c308d80f763548aea6ac4d09366ea"},
     "aaron": {"name": "Aaron", "open_id": "ou_a34ef34252262d466f5b7b5ede682293"},
     "jackson": {"name": "Jackson Li", "open_id": "ou_e6aa709de5c54635c209414d527eab1d"},
+    "alvin": {"name": "Alvin Xiao", "open_id": "ou_8f0b0a9e14ba9f6a1f0f96566b413009"},
+    "thomas": {"name": "Thomas Chang", "open_id": "ou_6f6b6f442a67861762a7c2a4b2f909f6"},
+    "deric": {"name": "Deric Chan", "open_id": "ou_7c886ae31caba4f77f0e3369c033b8aa"},
 }
 
 # 对话历史：按 chat_id（群聊）或 sender_id（私聊）维护上下文
@@ -46,10 +49,12 @@ CALENDAR_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
-# Aaron = Aaron + Jackson Li 合并视为一个人
+# 人名匹配：Aaron = Aaron + Jackson Li，Thomas = Thomas Chang + Deric Chan
 PERSON_PATTERNS = {
     "ethan": re.compile(r"(ethan|我的|你的|老板)", re.IGNORECASE),
-    "aaron": re.compile(r"(aaron|jackson|li)", re.IGNORECASE),
+    "aaron": re.compile(r"(aaron|jackson\s*li)", re.IGNORECASE),
+    "alvin": re.compile(r"(alvin|xiao)", re.IGNORECASE),
+    "thomas": re.compile(r"(thomas|deric|chang|chan)", re.IGNORECASE),
 }
 
 
@@ -285,6 +290,13 @@ def get_calendar_context(content: str) -> str:
             all_slots = slots_aaron + slots_jackson
             formatted = format_freebusy(all_slots)
             results.append(f"【Aaron 在 {date_label} 的忙碌时段】\n{formatted}")
+        elif key == "thomas":
+            # 合并 Thomas Chang + Deric Chan 两个账号的时段
+            slots_thomas = query_freebusy_raw(USERS["thomas"]["open_id"], start_date, end_date)
+            slots_deric = query_freebusy_raw(USERS["deric"]["open_id"], start_date, end_date)
+            all_slots = slots_thomas + slots_deric
+            formatted = format_freebusy(all_slots)
+            results.append(f"【Thomas Chang 在 {date_label} 的忙碌时段】\n{formatted}")
         else:
             user = USERS[key]
             slots = query_freebusy_raw(user["open_id"], start_date, end_date)
