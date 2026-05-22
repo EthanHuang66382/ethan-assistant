@@ -466,10 +466,12 @@ def generate_reply(content: str, sender_id: str, chat_type: str, conv_key: str) 
         messages = list(conversation_history[conv_key])
         messages.append({"role": "user", "content": [{"text": content}]})
 
+        max_tokens = 4096 if chat_summary_context else 1024
+
         payload = {
             "system": [{"text": system_prompt}],
             "messages": messages,
-            "inferenceConfig": {"maxTokens": 1024, "temperature": 0.7},
+            "inferenceConfig": {"maxTokens": max_tokens, "temperature": 0.7},
         }
 
         req = urllib.request.Request(
