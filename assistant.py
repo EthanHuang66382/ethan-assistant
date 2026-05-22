@@ -64,11 +64,23 @@ def get_system_prompt() -> str:
 
 
 def query_freebusy_raw(user_id: str, start_date: str, end_date: str) -> list:
-    """查询指定用户的忙闲信息，返回解析后的时段列表"""
-    cmd = [LARK_CLI, "calendar", "+freebusy",
-           "--user-id", user_id,
-           "--start", start_date,
-           "--end", end_date,
+    """查询指定用户的忙闲信息（仅飞书日历，排除外部日历），返回时段列表"""
+    # 将日期转为 RFC 3339 格式
+    time_min = f"{start_date}T00:00:00+08:00"
+    # end_date 取当天结束
+    time_max = f"{end_date}T23:59:59+08:00"
+
+    data_payload = json.dumps({
+        "user_id": user_id,
+        "time_min": time_min,
+        "time_max": time_max,
+        "include_external_calendar": False,
+        "only_busy": True,
+    })
+
+    cmd = [LARK_CLI, "calendar", "freebusys", "list",
+           "--params", json.dumps({"user_id_type": "open_id"}),
+           "--data", data_payload,
            "--as", "bot"]
 
     try:
@@ -77,8 +89,13 @@ def query_freebusy_raw(user_id: str, start_date: str, end_date: str) -> list:
             log(f"ERROR: freebusy query failed: {result.stderr}")
             return []
         data = json.loads(result.stdout)
+        # 原生 API 返回格式: {code:0, data:{freebusy_list:[...]}}
+        if data.get("code") == 0:
+            return data.get("data", {}).get("freebusy_list", [])
+        # 兼容 shortcut 格式
         if data.get("ok") and "data" in data:
             return data["data"]
+        log(f"ERROR: freebusy unexpected response: {json.dumps(data)[:200]}")
         return []
     except Exception as e:
         log(f"ERROR: freebusy exception: {e}")
