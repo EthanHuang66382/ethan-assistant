@@ -207,7 +207,7 @@ def parse_date_range_from_message(content: str) -> tuple[str, str]:
         end = start + timedelta(days=6)
         return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
 
-    m = re.search(r"未来(\d+)[天日]|接下来(\d+)[天日]|next (\d+) days?", content, re.IGNORECASE)
+    m = re.search(r"未来(\d+)[天日]|接下来(\d+)[天日]|(?:next|coming|upcoming)\s+(\d+)\s*days?", content, re.IGNORECASE)
     if m:
         days = int(m.group(1) or m.group(2) or m.group(3))
         days = min(days, 30)
@@ -226,6 +226,9 @@ def parse_date_range_from_message(content: str) -> tuple[str, str]:
         return today.strftime("%Y-%m-%d"), (today + timedelta(days=6)).strftime("%Y-%m-%d")
 
     # 单日表达式
+    if re.search(r"今天|今日|today", content, re.IGNORECASE):
+        d = today.strftime("%Y-%m-%d")
+        return d, d
     if re.search(r"明天|明日|tomorrow", content, re.IGNORECASE):
         d = (today + timedelta(days=1)).strftime("%Y-%m-%d")
         return d, d
