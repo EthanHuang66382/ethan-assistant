@@ -49,6 +49,15 @@ CALENDAR_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
+CHAT_SUMMARY_KEYWORDS = re.compile(
+    r"(总结|摘要|summary|summarize|概括|回顾|近期.*消息|最近.*消息|聊了什么|说了什么|讨论了什么)",
+    re.IGNORECASE,
+)
+
+CHAT_NAME_PATTERN = re.compile(
+    r"[「「\"](.+?)[」」\"]|群[:\s]*(.+?)[\s的]",
+)
+
 # 人名匹配：Aaron = Aaron + Jackson Li，Thomas = Thomas Chang + Deric Chan
 PERSON_PATTERNS = {
     "ethan": re.compile(r"(ethan|我的|你的|老板)", re.IGNORECASE),
@@ -271,6 +280,85 @@ def detect_calendar_query(content: str) -> list:
     return targets
 
 
+def search_chat_by_name(query: str) -> str | None:
+    """通过群名搜索 chat_id"""
+    try:
+        result = subprocess.run(
+            [LARK_CLI, "im", "+chat-search",
+             "--query", query,
+             "--as", "bot"],
+            capture_output=True, text=True, timeout=15
+        )
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            chats = data.get("data", {}).get("chats", [])
+            if chats:
+                return chats[0].get("chat_id")
+    except Exception as e:
+        log(f"ERROR: search_chat failed: {e}")
+    return None
+
+
+def fetch_chat_messages(chat_id: str, limit: int = 50) -> list[str]:
+    """获取群聊最近的消息"""
+    try:
+        result = subprocess.run(
+            [LARK_CLI, "im", "+chat-messages-list",
+             "--chat-id", chat_id,
+             "--as", "bot"],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            messages = data.get("data", {}).get("messages", [])
+            # 只取文本消息，过滤系统消息
+            text_msgs = []
+            for m in messages[:limit]:
+                content = m.get("content", "")
+                sender = m.get("sender", {}).get("name", "?")
+                create_time = m.get("create_time", "")
+                msg_type = m.get("msg_type", "")
+                if msg_type in ("text", "post") and content and not content.startswith("["):
+                    text_msgs.append(f"[{create_time}] {sender}: {content}")
+            return text_msgs
+    except Exception as e:
+        log(f"ERROR: fetch_chat_messages failed: {e}")
+    return []
+
+
+def detect_chat_summary(content: str) -> str | None:
+    """检测是否是群聊总结请求，返回群名关键词"""
+    if not CHAT_SUMMARY_KEYWORDS.search(content):
+        return None
+    m = CHAT_NAME_PATTERN.search(content)
+    if m:
+        return m.group(1) or m.group(2)
+    # 尝试直接匹配可能的群名
+    for word in content.split():
+        if len(word) >= 2 and word not in ("总结", "摘要", "一下", "这个", "群里", "近期", "最近", "帮我"):
+            return word
+    return None
+
+
+def get_chat_summary_context(content: str) -> str:
+    """检测群聊总结请求并获取消息"""
+    chat_name = detect_chat_summary(content)
+    if not chat_name:
+        return ""
+
+    log(f"CHAT_SUMMARY: searching for chat '{chat_name}'")
+    chat_id = search_chat_by_name(chat_name)
+    if not chat_id:
+        return f"【群聊搜索结果】未找到名为「{chat_name}」的群聊，可能 bot 未加入该群。"
+
+    messages = fetch_chat_messages(chat_id)
+    if not messages:
+        return f"【群聊「{chat_name}」】没有找到近期文本消息。"
+
+    msg_text = "\n".join(messages)
+    return f"【群聊「{chat_name}」近期消息（最新在前）】\n{msg_text}\n\n请基于以上消息内容为用户生成摘要总结。"
+
+
 def get_calendar_context(content: str) -> str:
     """根据消息内容查询日历信息，返回上下文（已预处理为 UTC+8 并合并）"""
     targets = detect_calendar_query(content)
@@ -314,6 +402,8 @@ def generate_reply(content: str, sender_id: str, chat_type: str, conv_key: str) 
 
     # 检查是否需要日历上下文
     calendar_context = get_calendar_context(content)
+    # 检查是否需要群聊总结
+    chat_summary_context = get_chat_summary_context(content)
 
     try:
         model_path = BEDROCK_MODEL_ID.replace(":", "%3A")
@@ -327,6 +417,8 @@ def generate_reply(content: str, sender_id: str, chat_type: str, conv_key: str) 
         system_prompt += f"\n\n## 当前时间\n{today_info}"
         if calendar_context:
             system_prompt += f"\n\n## 日历查询结果（实时数据）\n\n{calendar_context}\n\n请基于以上数据回答用户的日历相关问题。只需告知哪些时间段被占用即可，格式简洁。注意：标注星期几时请根据日期准确计算，不要猜测。"
+        if chat_summary_context:
+            system_prompt += f"\n\n## 群聊消息数据\n\n{chat_summary_context}"
 
         # 构建含历史的消息列表
         messages = list(conversation_history[conv_key])

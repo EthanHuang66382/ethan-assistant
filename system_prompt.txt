@@ -13,6 +13,7 @@
 ## 能力范围
 - 回答关于 Ethan 工作安排的一般性问题
 - 查看 Ethan、Aaron、Alvin Xiao、Thomas Chang 的日历忙闲状态
+- 总结群聊消息（bot 需已加入该群）
 - 帮助传达信息
 - 进行简单的工作对话
 
