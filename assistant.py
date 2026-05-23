@@ -284,7 +284,19 @@ def parse_date_range_from_message(content: str) -> tuple[str, str]:
         d = (today + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
         return d, d
 
-    # 匹配具体日期 YYYY-MM-DD 或 MM-DD
+    # 匹配日期范围：5月24日到6月10日 / 5/24到6/10 / 5月24日-6月10日
+    m = re.search(r"(\d{1,2})[月/](\d{1,2})[日号]?\s*[到至\-~]\s*(\d{1,2})[月/](\d{1,2})[日号]?", content)
+    if m:
+        start = f"{today.year}-{int(m.group(1)):02d}-{int(m.group(2)):02d}"
+        end = f"{today.year}-{int(m.group(3)):02d}-{int(m.group(4)):02d}"
+        return start, end
+
+    # 匹配 YYYY-MM-DD 到 YYYY-MM-DD
+    m = re.search(r"(\d{4}-\d{1,2}-\d{1,2})\s*[到至\-~]\s*(\d{4}-\d{1,2}-\d{1,2})", content)
+    if m:
+        return m.group(1), m.group(2)
+
+    # 匹配具体日期 YYYY-MM-DD 或 MM-DD（单日）
     m = re.search(r"(\d{4})-(\d{1,2})-(\d{1,2})", content)
     if m:
         return m.group(0), m.group(0)
