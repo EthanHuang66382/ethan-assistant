@@ -45,7 +45,7 @@ MAX_HISTORY = 10  # 保留最近 10 轮对话
 conversation_history: dict[str, list] = defaultdict(list)
 
 CALENDAR_KEYWORDS = re.compile(
-    r"(日历|日程|calendar|schedule|忙|闲|空闲|有空|meeting|会议|安排|行程|freebusy|忙闲|时间)",
+    r"(日历|日程|calendar|schedule|忙|闲|空闲|有空|meeting|会议|安排|行程|freebusy|忙闲|有没有空|什么时候有空)",
     re.IGNORECASE,
 )
 
@@ -54,11 +54,7 @@ CHAT_SUMMARY_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
-CHAT_NAME_PATTERNS = [
-    re.compile(r"[「「\"【](.+?)[」」\"】]"),
-    re.compile(r"([\w一-鿿]+?)(?:群里|群的|这个群)"),
-    re.compile(r"群[:\s「「\"]*(.+?)[\s」」\"的里]"),
-]
+CHAT_NAME_QUOTED = re.compile(r"[「「\"【](.+?)[」」\"】]")
 
 # 人名匹配：Aaron = Aaron + Jackson Li，Thomas = Thomas Chang + Deric Chan
 PERSON_PATTERNS = {
@@ -88,6 +84,9 @@ def get_system_prompt() -> str:
 
 def query_freebusy_raw(user_id: str, start_date: str, end_date: str) -> list:
     """查询指定用户的忙闲信息（仅飞书日历，排除外部日历），返回时段列表"""
+    if not user_id:
+        log("ERROR: freebusy query skipped — empty user_id")
+        return []
     # 将日期转为 RFC 3339 格式
     time_min = f"{start_date}T00:00:00+08:00"
     # end_date 取当天结束
@@ -358,7 +357,7 @@ def fetch_chat_messages(chat_id: str, limit: int = 50) -> list[str]:
 def extract_chat_name(content: str) -> str | None:
     """从消息中提取群名"""
     # 优先匹配引号/括号包裹的群名
-    m = CHAT_NAME_PATTERNS[0].search(content)
+    m = CHAT_NAME_QUOTED.search(content)
     if m:
         return m.group(1).strip()
 
@@ -449,10 +448,10 @@ def generate_reply(content: str, sender_id: str, chat_type: str, conv_key: str) 
         log("ERROR: AWS_BEARER_TOKEN_BEDROCK not set")
         return "抱歉，我暂时无法处理这条消息，稍后 Ethan 会回复你。"
 
-    # 检查是否需要日历上下文
-    calendar_context = get_calendar_context(content)
-    # 检查是否需要群聊总结
+    # 检查是否需要群聊总结（优先级高于日历）
     chat_summary_context = get_chat_summary_context(content)
+    # 群聊总结和日历查询互斥，避免误触发
+    calendar_context = "" if chat_summary_context else get_calendar_context(content)
 
     try:
         model_path = BEDROCK_MODEL_ID.replace(":", "%3A")
@@ -592,6 +591,9 @@ def summarize_for_relay(content: str, conv_key: str) -> str:
 
 def notify_ethan(sender_id: str, chat_type: str, chat_id: str, content: str, conv_key: str):
     """转达消息给 Ethan：AI 摘要后发到 Ethan Assistant Group"""
+    if not RELAY_CHAT_ID:
+        log("ERROR: RELAY_CHAT_ID not set, skipping relay")
+        return
     sender_name = get_user_name(sender_id)
     summary = summarize_for_relay(content, conv_key)
     source = f"群聊" if chat_type != "p2p" else "私聊"
