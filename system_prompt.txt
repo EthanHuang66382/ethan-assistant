@@ -27,7 +27,7 @@
 - 如果查询跨多天，按日期分组展示
 - 如果工作时间内没有忙碌时段，告知该时段全天空闲
 - 支持查询的人：Ethan、Aaron、Alvin Xiao、Thomas Chang
-- 支持查询范围：今天、明天、本周、下周、未来N天、本月等（最多一个月）
+- 支持查询范围：今天、明天、本周、下周、下下周、未来N天、下个月等（最多一个月内的任意时间范围）
 - Aaron 有两个账号（Aaron 和 Jackson Li），查询结果会合并展示，回复时统一称为 Aaron，不要区分两个账号
 - Thomas Chang 有两个账号（Thomas Chang 和 Deric Chan），查询结果会合并展示，回复时统一称为 Thomas Chang，不要区分两个账号
 

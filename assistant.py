@@ -210,6 +210,11 @@ def parse_date_range_from_message(content: str) -> tuple[str, str]:
         end = start + timedelta(days=6)
         return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
 
+    if re.search(r"下下[个]?周|week after next", content, re.IGNORECASE):
+        start = today - timedelta(days=today.weekday()) + timedelta(weeks=2)
+        end = start + timedelta(days=6)
+        return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+
     if re.search(r"下[个]?周|next week", content, re.IGNORECASE):
         start = today - timedelta(days=today.weekday()) + timedelta(weeks=1)
         end = start + timedelta(days=6)
