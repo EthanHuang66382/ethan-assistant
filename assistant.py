@@ -527,8 +527,20 @@ def generate_reply(content: str, sender_id: str, chat_type: str, conv_key: str) 
         return "抱歉，我暂时无法处理这条消息，稍后 Ethan 会回复你。"
 
 
+def strip_markdown(text: str) -> str:
+    """移除 Markdown 格式符号，飞书文本消息会原样显示"""
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    text = re.sub(r"\*(.+?)\*", r"\1", text)
+    text = re.sub(r"__(.+?)__", r"\1", text)
+    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^>\s?", "", text, flags=re.MULTILINE)
+    text = re.sub(r"`([^`]+)`", r"\1", text)
+    return text
+
+
 def send_reply(message_id: str, reply_text: str):
     """通过 lark-cli 回复消息"""
+    reply_text = strip_markdown(reply_text)
     try:
         result = subprocess.run(
             [LARK_CLI, "im", "+messages-reply",
