@@ -40,5 +40,12 @@ jobs:
           AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
           AWS_REGION: us-east-1
           BEDROCK_MODEL_ID: us.anthropic.claude-sonnet-4-20250514-v1:0
-          BOT_OPEN_ID: ${{ vars.BOT_OPEN_ID || '' }}
+          BOT_OPEN_ID: ${{ secrets.BOT_OPEN_ID }}
+          OPEN_ID_ETHAN: ${{ secrets.OPEN_ID_ETHAN }}
+          OPEN_ID_AARON: ${{ secrets.OPEN_ID_AARON }}
+          OPEN_ID_JACKSON: ${{ secrets.OPEN_ID_JACKSON }}
+          OPEN_ID_ALVIN: ${{ secrets.OPEN_ID_ALVIN }}
+          OPEN_ID_THOMAS: ${{ secrets.OPEN_ID_THOMAS }}
+          OPEN_ID_DERIC: ${{ secrets.OPEN_ID_DERIC }}
+          RELAY_CHAT_ID: ${{ secrets.RELAY_CHAT_ID }}
         run: python3 assistant.py

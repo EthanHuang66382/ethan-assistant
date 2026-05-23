@@ -30,14 +30,14 @@ AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 BEDROCK_MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-20250514-v1:0")
 AWS_BEARER_TOKEN = os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "")
 
-# 用户 ID 映射
+# 用户 ID 映射（从环境变量读取）
 USERS = {
-    "ethan": {"name": "Ethan Huang", "open_id": "ou_698c308d80f763548aea6ac4d09366ea"},
-    "aaron": {"name": "Aaron", "open_id": "ou_a34ef34252262d466f5b7b5ede682293"},
-    "jackson": {"name": "Jackson Li", "open_id": "ou_e6aa709de5c54635c209414d527eab1d"},
-    "alvin": {"name": "Alvin Xiao", "open_id": "ou_8f0b0a9e14ba9f6a1f0f96566b413009"},
-    "thomas": {"name": "Thomas Chang", "open_id": "ou_6f6b6f442a67861762a7c2a4b2f909f6"},
-    "deric": {"name": "Deric Chan", "open_id": "ou_7c886ae31caba4f77f0e3369c033b8aa"},
+    "ethan": {"name": "Ethan Huang", "open_id": os.environ.get("OPEN_ID_ETHAN", "")},
+    "aaron": {"name": "Aaron", "open_id": os.environ.get("OPEN_ID_AARON", "")},
+    "jackson": {"name": "Jackson Li", "open_id": os.environ.get("OPEN_ID_JACKSON", "")},
+    "alvin": {"name": "Alvin Xiao", "open_id": os.environ.get("OPEN_ID_ALVIN", "")},
+    "thomas": {"name": "Thomas Chang", "open_id": os.environ.get("OPEN_ID_THOMAS", "")},
+    "deric": {"name": "Deric Chan", "open_id": os.environ.get("OPEN_ID_DERIC", "")},
 }
 
 # 对话历史：按 chat_id（群聊）或 sender_id（私聊）维护上下文
@@ -526,7 +526,7 @@ def send_reply(message_id: str, reply_text: str):
         log(f"ERROR: send_reply exception: {e}")
 
 
-RELAY_CHAT_ID = os.environ.get("RELAY_CHAT_ID", "oc_36a5dcbe3d2c02c32e31c817da7b92db")
+RELAY_CHAT_ID = os.environ.get("RELAY_CHAT_ID", "")
 
 
 def get_user_name(open_id: str) -> str:
