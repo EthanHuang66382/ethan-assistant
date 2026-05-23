@@ -16,7 +16,7 @@ import time
 import urllib.request
 import urllib.error
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).parent
@@ -67,6 +67,13 @@ PERSON_PATTERNS = {
     "alvin": re.compile(r"(alvin|xiao)", re.IGNORECASE),
     "thomas": re.compile(r"(thomas|deric|chang|chan)", re.IGNORECASE),
 }
+
+
+UTC8 = timezone(timedelta(hours=8))
+
+
+def now_utc8() -> datetime:
+    return datetime.now(UTC8)
 
 
 def log(msg: str):
@@ -184,7 +191,7 @@ def format_freebusy(raw_slots: list, offset_hours: int = 8) -> str:
 
 def parse_date_range_from_message(content: str) -> tuple[str, str]:
     """从消息中提取日期范围 (start, end)，支持单日和多日范围，最多一个月"""
-    today = datetime.now()
+    today = now_utc8()
 
     # 范围表达式
     if re.search(r"这[个]?月|本月|this month", content, re.IGNORECASE):
@@ -451,7 +458,7 @@ def generate_reply(content: str, sender_id: str, chat_type: str, conv_key: str) 
         model_path = BEDROCK_MODEL_ID.replace(":", "%3A")
         url = f"https://bedrock-runtime.{AWS_REGION}.amazonaws.com/model/{model_path}/converse"
 
-        today = datetime.now()
+        today = now_utc8()
         weekday_names = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
         today_info = f"今天是 {today.strftime('%Y-%m-%d')} {weekday_names[today.weekday()]}"
 
