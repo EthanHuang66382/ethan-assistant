@@ -82,11 +82,11 @@ def get_system_prompt() -> str:
     return "你是 Ethan Huang 的 AI 助理。请用专业友善的语气回复消息。如果不确定如何回答，可以告知对方你会转达给 Ethan。回复请简洁明了。"
 
 
-def query_freebusy_raw(user_id: str, start_date: str, end_date: str) -> list:
-    """查询指定用户的忙闲信息（仅飞书日历，排除外部日历），返回时段列表"""
+def query_freebusy_raw(user_id: str, start_date: str, end_date: str) -> list | None:
+    """查询指定用户的忙闲信息（仅飞书日历，排除外部日历），返回时段列表。失败返回 None。"""
     if not user_id:
         log("ERROR: freebusy query skipped — empty user_id")
-        return []
+        return None
     # 将日期转为 RFC 3339 格式
     time_min = f"{start_date}T00:00:00+08:00"
     # end_date 取当天结束
@@ -109,7 +109,7 @@ def query_freebusy_raw(user_id: str, start_date: str, end_date: str) -> list:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
             log(f"ERROR: freebusy query failed: {result.stderr}")
-            return []
+            return None
         data = json.loads(result.stdout)
         # 原生 API 返回格式: {code:0, data:{freebusy_list:[...]}}
         if data.get("code") == 0:
@@ -118,10 +118,10 @@ def query_freebusy_raw(user_id: str, start_date: str, end_date: str) -> list:
         if data.get("ok") and "data" in data:
             return data["data"]
         log(f"ERROR: freebusy unexpected response: {json.dumps(data)[:200]}")
-        return []
+        return None
     except Exception as e:
         log(f"ERROR: freebusy exception: {e}")
-        return []
+        return None
 
 
 def parse_utc_to_local(utc_str: str, offset_hours: int = 8) -> datetime:
@@ -144,8 +144,10 @@ def merge_time_slots(slots: list[tuple[datetime, datetime]]) -> list[tuple[datet
     return merged
 
 
-def format_freebusy(raw_slots: list, offset_hours: int = 8) -> str:
+def format_freebusy(raw_slots: list | None, offset_hours: int = 8) -> str:
     """将原始 freebusy JSON 数据处理为人类可读的 UTC+8 格式，去重并合并"""
+    if raw_slots is None:
+        return "查询失败，请稍后再试"
     if not raw_slots:
         return "无忙碌时段（全天空闲）"
 
@@ -423,15 +425,21 @@ def get_calendar_context(content: str) -> str:
             # 合并 Aaron + Jackson Li 两个账号的时段
             slots_aaron = query_freebusy_raw(USERS["aaron"]["open_id"], start_date, end_date)
             slots_jackson = query_freebusy_raw(USERS["jackson"]["open_id"], start_date, end_date)
-            all_slots = slots_aaron + slots_jackson
-            formatted = format_freebusy(all_slots)
+            if slots_aaron is None and slots_jackson is None:
+                formatted = format_freebusy(None)
+            else:
+                all_slots = (slots_aaron or []) + (slots_jackson or [])
+                formatted = format_freebusy(all_slots)
             results.append(f"【Aaron 在 {date_label} 的忙碌时段】\n{formatted}")
         elif key == "thomas":
             # 合并 Thomas Chang + Deric Chan 两个账号的时段
             slots_thomas = query_freebusy_raw(USERS["thomas"]["open_id"], start_date, end_date)
             slots_deric = query_freebusy_raw(USERS["deric"]["open_id"], start_date, end_date)
-            all_slots = slots_thomas + slots_deric
-            formatted = format_freebusy(all_slots)
+            if slots_thomas is None and slots_deric is None:
+                formatted = format_freebusy(None)
+            else:
+                all_slots = (slots_thomas or []) + (slots_deric or [])
+                formatted = format_freebusy(all_slots)
             results.append(f"【Thomas Chang 在 {date_label} 的忙碌时段】\n{formatted}")
         else:
             user = USERS[key]
@@ -614,8 +622,25 @@ def notify_ethan(sender_id: str, chat_type: str, chat_id: str, content: str, con
         log(f"ERROR: notify_ethan exception: {e}")
 
 
+# 消息去重：记录已处理的 event_id，防止重复投递
+processed_events: set[str] = set()
+MAX_PROCESSED_EVENTS = 1000
+
+
 def process_event(event: dict):
     """处理单条消息事件"""
+    # 去重：跳过已处理的事件
+    event_id = event.get("event_id", "")
+    if event_id:
+        if event_id in processed_events:
+            log(f"SKIP: duplicate event {event_id}")
+            return
+        processed_events.add(event_id)
+        if len(processed_events) > MAX_PROCESSED_EVENTS:
+            to_remove = list(processed_events)[:MAX_PROCESSED_EVENTS // 2]
+            for eid in to_remove:
+                processed_events.discard(eid)
+
     sender_id = event.get("sender_id", "")
     chat_id = event.get("chat_id", "")
     chat_type = event.get("chat_type", "")
@@ -627,6 +652,15 @@ def process_event(event: dict):
     if BOT_OPEN_ID and sender_id == BOT_OPEN_ID:
         log(f"SKIP: message from self")
         return
+
+    # 群聊中只回复 @bot 或包含 bot 名字的消息
+    if chat_type == "group":
+        mention_markers = ["@ethan assistant", "@ethanassistant", "@assistant"]
+        content_lower = content.lower()
+        has_mention = any(m in content_lower for m in mention_markers)
+        if not has_mention:
+            log(f"SKIP: group message without @bot from {sender_id}")
+            return
 
     # 只处理文本/富文本消息
     if message_type not in ("text", "post"):
@@ -696,8 +730,16 @@ def main():
     # 优雅关闭
     def shutdown(signum, frame):
         log(f"Received signal {signum}, shutting down...")
-        proc.stdin.close()
-        proc.wait(timeout=10)
+        try:
+            if proc.stdin:
+                proc.stdin.close()
+            proc.wait(timeout=10)
+        except Exception:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                proc.kill()
         log("=== Ethan Assistant stopped ===")
         sys.exit(0)
 
@@ -737,6 +779,7 @@ def main():
     proc.wait()
     log(f"Event consume exited with code {proc.returncode}")
     log("=== Ethan Assistant stopped ===")
+    sys.exit(proc.returncode)
 
 
 if __name__ == "__main__":

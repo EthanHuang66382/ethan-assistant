@@ -26,12 +26,14 @@
 | `LARK_APP_ID` | 飞书应用 App ID |
 | `LARK_APP_SECRET` | 飞书应用 App Secret |
 | `AWS_BEARER_TOKEN_BEDROCK` | AWS Bedrock Bearer Token |
-
-### 可选 Variables
-
-| Variable | 说明 | 默认值 |
-|----------|------|--------|
-| `BOT_OPEN_ID` | Bot 的 open_id（防止回复自己） | 空 |
+| `BOT_OPEN_ID` | Bot 的 open_id（防止回复自己） |
+| `OPEN_ID_ETHAN` | Ethan 的 open_id |
+| `OPEN_ID_AARON` | Aaron 的 open_id |
+| `OPEN_ID_JACKSON` | Jackson Li 的 open_id（Aaron 第二账号） |
+| `OPEN_ID_ALVIN` | Alvin Xiao 的 open_id |
+| `OPEN_ID_THOMAS` | Thomas Chang 的 open_id |
+| `OPEN_ID_DERIC` | Deric Chan 的 open_id（Thomas 第二账号） |
+| `RELAY_CHAT_ID` | 转达通知发送的群 chat_id |
 
 ### 飞书应用权限
 
