@@ -95,14 +95,18 @@ TOOLS = [
     {
         "toolSpec": {
             "name": "search_chat_messages",
-            "description": "搜索指定群聊并获取最近的消息，用于生成群聊摘要/总结。需要 bot 已加入该群。",
+            "description": "获取群聊的最近消息，用于生成群聊摘要/总结。可以通过 chat_id 直接获取（当用户说「本群」时使用系统提供的当前 chat_id），也可以通过 chat_name 搜索群聊。需要 bot 已加入该群。",
             "inputSchema": {
                 "json": {
                     "type": "object",
                     "properties": {
+                        "chat_id": {
+                            "type": "string",
+                            "description": "群聊 ID（oc_ 开头）。当用户说「本群」「这个群」时，使用系统提供的当前对话 chat_id"
+                        },
                         "chat_name": {
                             "type": "string",
-                            "description": "要搜索的群聊名称关键词"
+                            "description": "要搜索的群聊名称关键词。当没有 chat_id 时使用"
                         },
                         "limit": {
                             "type": "integer",
@@ -110,7 +114,7 @@ TOOLS = [
                             "default": 50
                         }
                     },
-                    "required": ["chat_name"]
+                    "required": []
                 }
             }
         }
@@ -301,21 +305,28 @@ def fetch_chat_messages(chat_id: str, limit: int = 50) -> list[str]:
     return []
 
 
-def execute_search_chat_messages(chat_name: str, limit: int = 50) -> str:
+def execute_search_chat_messages(chat_id: str = "", chat_name: str = "", limit: int = 50) -> str:
     """执行群聊消息搜索工具"""
     limit = min(limit, 100)
-    log(f"TOOL search_chat_messages: chat_name={chat_name}, limit={limit}")
+    log(f"TOOL search_chat_messages: chat_id={chat_id}, chat_name={chat_name}, limit={limit}")
 
-    chat_id = search_chat_by_name(chat_name)
+    if not chat_id and chat_name:
+        found = search_chat_by_name(chat_name)
+        if not found:
+            return f"未找到名为「{chat_name}」的群聊，可能 bot 未加入该群。"
+        chat_id = found
+
     if not chat_id:
-        return f"未找到名为「{chat_name}」的群聊，可能 bot 未加入该群。"
+        return "请提供群聊名称或 chat_id。"
 
     messages = fetch_chat_messages(chat_id, limit)
     if not messages:
-        return f"群聊「{chat_name}」没有找到近期文本消息。"
+        label = chat_name or chat_id
+        return f"群聊「{label}」没有找到近期文本消息。"
 
     msg_text = "\n".join(messages)
-    return f"群聊「{chat_name}」近期消息（最新在前）:\n{msg_text}"
+    label = chat_name or chat_id
+    return f"群聊「{label}」近期消息（最新在前）:\n{msg_text}"
 
 
 def execute_tool(tool_name: str, tool_input: dict) -> str:
@@ -328,6 +339,7 @@ def execute_tool(tool_name: str, tool_input: dict) -> str:
         )
     elif tool_name == "search_chat_messages":
         return execute_search_chat_messages(
+            chat_id=tool_input.get("chat_id", ""),
             chat_name=tool_input.get("chat_name", ""),
             limit=tool_input.get("limit", 50),
         )
@@ -365,7 +377,7 @@ def call_bedrock(system_prompt: str, messages: list, use_tools: bool = True, max
         return json.loads(resp.read())
 
 
-def generate_reply(content: str, sender_id: str, chat_type: str, conv_key: str) -> str:
+def generate_reply(content: str, sender_id: str, chat_type: str, chat_id: str, conv_key: str) -> str:
     """调用 Bedrock Claude，支持多轮 tool use 循环"""
     if not AWS_BEARER_TOKEN:
         log("ERROR: AWS_BEARER_TOKEN_BEDROCK not set")
@@ -378,6 +390,8 @@ def generate_reply(content: str, sender_id: str, chat_type: str, conv_key: str) 
 
         system_prompt = get_system_prompt()
         system_prompt += f"\n\n## 当前时间\n{today_info}"
+        if chat_type == "group" and chat_id:
+            system_prompt += f"\n\n## 当前对话信息\n当前群聊 chat_id: {chat_id}"
 
         messages = list(conversation_history[conv_key])
         messages.append({"role": "user", "content": [{"text": content}]})
@@ -604,7 +618,7 @@ def process_event(event: dict):
     log(f"RECV: [{chat_type}] from={sender_id} type={message_type} msg_id={message_id} content={content[:80]}")
 
     conv_key = sender_id if chat_type == "p2p" else chat_id
-    reply = generate_reply(content, sender_id, chat_type, conv_key)
+    reply = generate_reply(content, sender_id, chat_type, chat_id, conv_key)
 
     if reply:
         if "[RELAY]" in reply:
