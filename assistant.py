@@ -586,13 +586,11 @@ def process_event(event: dict):
         log(f"SKIP: message from self")
         return
 
-    if chat_type == "group":
-        mention_markers = ["@ethan assistant", "@ethanassistant", "@assistant"]
-        content_lower = content.lower()
-        has_mention = any(m in content_lower for m in mention_markers)
-        if not has_mention:
-            log(f"SKIP: group message without @bot from {sender_id}")
-            return
+    # 群聊过滤：飞书默认只推送 @bot 的消息给 bot
+    # 如果应用开启了"接收所有消息"权限，则检测 content 中是否有 @ 标记
+    if chat_type == "group" and "@" not in content:
+        log(f"SKIP: group message without @bot from {sender_id}")
+        return
 
     if message_type not in ("text", "post"):
         log(f"SKIP: unsupported type={message_type} from {sender_id}")
