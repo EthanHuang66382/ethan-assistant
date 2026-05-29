@@ -41,6 +41,7 @@ USERS = {
 
 # 对话历史：按 chat_id（群聊）或 sender_id（私聊）维护上下文
 MAX_HISTORY = 10
+MAX_CONVERSATIONS = 200
 conversation_history: dict[str, list] = defaultdict(list)
 
 UTC8 = timezone(timedelta(hours=8))
@@ -166,8 +167,13 @@ def query_freebusy_raw(user_id: str, start_date: str, end_date: str) -> list | N
 
 
 def parse_utc_to_local(utc_str: str, offset_hours: int = 8) -> datetime:
-    """将 UTC 时间字符串转为本地时间"""
-    dt = datetime.strptime(utc_str, "%Y-%m-%dT%H:%M:%SZ")
+    """将 UTC 时间字符串转为本地时间（支持毫秒和 +00:00 格式）"""
+    cleaned = utc_str.split(".")[0].rstrip("Z")
+    if "+" in cleaned:
+        cleaned = cleaned[:cleaned.rindex("+")]
+    elif cleaned.endswith("-00:00"):
+        cleaned = cleaned[:-6]
+    dt = datetime.strptime(cleaned, "%Y-%m-%dT%H:%M:%S")
     return dt + timedelta(hours=offset_hours)
 
 
@@ -210,8 +216,7 @@ def format_freebusy(raw_slots: list | None) -> str:
     merged = merge_time_slots(slots)
 
     weekday_names = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
-    from collections import OrderedDict
-    days: dict[str, list[str]] = OrderedDict()
+    days: dict[str, list[str]] = {}
     for start, end in merged:
         date_key = start.strftime("%Y-%m-%d")
         wd = weekday_names[start.weekday()]
@@ -228,8 +233,19 @@ def format_freebusy(raw_slots: list | None) -> str:
     return "\n".join(lines) + "\n(时区: UTC+8)"
 
 
+def _validate_date(date_str: str) -> bool:
+    try:
+        datetime.strptime(date_str, "%Y-%m-%d")
+        return True
+    except ValueError:
+        return False
+
+
 def execute_query_freebusy(person: str, start_date: str, end_date: str) -> str:
     """执行日历查询工具"""
+    if not _validate_date(start_date) or not _validate_date(end_date):
+        return f"日期格式错误，需要 YYYY-MM-DD 格式。收到: start={start_date}, end={end_date}"
+
     date_label = start_date if start_date == end_date else f"{start_date} ~ {end_date}"
     log(f"TOOL query_freebusy: person={person}, range={date_label}")
 
@@ -417,6 +433,10 @@ def generate_reply(content: str, sender_id: str, chat_type: str, chat_id: str, c
                 conversation_history[conv_key].append({"role": "assistant", "content": [{"text": reply}]})
                 if len(conversation_history[conv_key]) > MAX_HISTORY * 2:
                     conversation_history[conv_key] = conversation_history[conv_key][-(MAX_HISTORY * 2):]
+                if len(conversation_history) > MAX_CONVERSATIONS:
+                    keys_to_remove = list(conversation_history.keys())[:len(conversation_history) - MAX_CONVERSATIONS]
+                    for k in keys_to_remove:
+                        del conversation_history[k]
 
                 return reply
 
@@ -572,7 +592,7 @@ def notify_ethan(sender_id: str, chat_type: str, chat_id: str, content: str, con
 # Event Processing
 # =============================================================================
 
-processed_events: set[str] = set()
+processed_events: dict[str, None] = {}
 MAX_PROCESSED_EVENTS = 1000
 
 
@@ -583,11 +603,11 @@ def process_event(event: dict):
         if event_id in processed_events:
             log(f"SKIP: duplicate event {event_id}")
             return
-        processed_events.add(event_id)
+        processed_events[event_id] = None
         if len(processed_events) > MAX_PROCESSED_EVENTS:
-            to_remove = list(processed_events)[:MAX_PROCESSED_EVENTS // 2]
-            for eid in to_remove:
-                processed_events.discard(eid)
+            keys = list(processed_events.keys())[:MAX_PROCESSED_EVENTS // 2]
+            for eid in keys:
+                del processed_events[eid]
 
     sender_id = event.get("sender_id", "")
     chat_id = event.get("chat_id", "")
