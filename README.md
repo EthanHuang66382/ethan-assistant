@@ -61,6 +61,7 @@
 | `RELAY_CHAT_ID` | 转达通知发送的群 chat_id |
 | `PM_SKILLS_ENABLED` | 可选，是否启用 PM skill 库 |
 | `PM_SKILLS_DIR` | 可选，PM skill 目录 |
+| `TOKEN_USAGE_ENABLED` | 可选，是否写入 token_usage.jsonl，默认 true |
 
 ### 飞书应用权限
 
@@ -78,6 +79,18 @@
 ## 自定义
 
 编辑 `system_prompt.txt` 调整 Assistant 的回复风格和能力范围。
+
+## Token 用量记录
+
+每条已回复的飞书消息会追加一行 JSON 到 `token_usage.jsonl`。记录按用户消息聚合本轮所有 Bedrock 调用，包括 tool-use 多轮调用；如果触发转达，转达摘要的 Bedrock token 也会合并到同一行。
+
+示例：
+
+```json
+{"ts":"2026-06-13 14:30:05","user":"Pan Haifeng","model":"claude-sonnet-4","input_tokens":1234,"output_tokens":456,"total_tokens":1690,"tools":["query_freebusy"],"question":"Thomas 和 Aaron 周五有空吗","chat_type":"p2p"}
+```
+
+GitHub Actions 在 `Run Ethan Assistant` 结束后会执行 `Persist token usage`，把 `token_usage.jsonl` commit 并 push 回 `main`。如需禁用本地记录，可设置 `TOKEN_USAGE_ENABLED=false`。
 
 ## 测试
 

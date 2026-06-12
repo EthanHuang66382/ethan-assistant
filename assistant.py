@@ -20,6 +20,7 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).parent
 SYSTEM_PROMPT_FILE = SCRIPT_DIR / "system_prompt.txt"
+TOKEN_USAGE_FILE = SCRIPT_DIR / "token_usage.jsonl"
 
 LARK_CLI = os.environ.get("LARK_CLI", "lark-cli")
 BOT_OPEN_ID = os.environ.get("BOT_OPEN_ID", "")
@@ -28,6 +29,7 @@ BOT_OPEN_ID = os.environ.get("BOT_OPEN_ID", "")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 BEDROCK_MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-20250514-v1:0")
 AWS_BEARER_TOKEN = os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "")
+TOKEN_USAGE_ENABLED = os.environ.get("TOKEN_USAGE_ENABLED", "true").lower() not in ("0", "false", "no", "off")
 
 # 用户 ID 映射（从环境变量读取）
 USERS = {
@@ -69,6 +71,68 @@ def get_system_prompt() -> str:
     if SYSTEM_PROMPT_FILE.exists():
         return SYSTEM_PROMPT_FILE.read_text().strip()
     return "你是 Ethan Huang 的 AI 助理。请用专业友善的语气回复消息。如果不确定如何回答，可以告知对方你会转达给 Ethan。回复请简洁明了。"
+
+
+def new_token_usage() -> dict:
+    return {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "tools": [],
+    }
+
+
+def add_token_usage(summary: dict, result: dict):
+    usage = result.get("usage", {}) or {}
+    input_tokens = int(usage.get("inputTokens", 0) or 0)
+    output_tokens = int(usage.get("outputTokens", 0) or 0)
+    total_tokens = int(usage.get("totalTokens", 0) or 0) or input_tokens + output_tokens
+    summary["input_tokens"] += input_tokens
+    summary["output_tokens"] += output_tokens
+    summary["total_tokens"] += total_tokens
+
+
+def merge_token_usage(target: dict, source: dict):
+    target["input_tokens"] += int(source.get("input_tokens", 0) or 0)
+    target["output_tokens"] += int(source.get("output_tokens", 0) or 0)
+    target["total_tokens"] += int(source.get("total_tokens", 0) or 0)
+    for tool in source.get("tools", []):
+        if tool not in target["tools"]:
+            target["tools"].append(tool)
+
+
+def add_usage_tool(summary: dict, tool_name: str):
+    if tool_name and tool_name not in summary["tools"]:
+        summary["tools"].append(tool_name)
+
+
+def model_label() -> str:
+    if "claude-sonnet-4" in BEDROCK_MODEL_ID:
+        return "claude-sonnet-4"
+    return BEDROCK_MODEL_ID
+
+
+def record_token_usage(user_name: str, chat_type: str, question: str, usage: dict):
+    if not TOKEN_USAGE_ENABLED or not usage.get("total_tokens"):
+        return
+
+    row = {
+        "ts": now_utc8().strftime("%Y-%m-%d %H:%M:%S"),
+        "user": user_name,
+        "model": model_label(),
+        "input_tokens": usage.get("input_tokens", 0),
+        "output_tokens": usage.get("output_tokens", 0),
+        "total_tokens": usage.get("total_tokens", 0),
+        "tools": usage.get("tools", []),
+        "question": question,
+        "chat_type": chat_type,
+    }
+    try:
+        with TOKEN_USAGE_FILE.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
+        log(f"TOKEN_USAGE: {json.dumps(row, ensure_ascii=False)}")
+    except Exception as e:
+        log(f"ERROR: failed to write token usage: {e}")
 
 
 # =============================================================================
@@ -732,11 +796,12 @@ def call_bedrock(system_prompt: str, messages: list, use_tools: bool = True, max
         return json.loads(resp.read())
 
 
-def generate_reply(content: str, sender_id: str, chat_type: str, chat_id: str, conv_key: str) -> str:
+def generate_reply(content: str, sender_id: str, chat_type: str, chat_id: str, conv_key: str) -> tuple[str, dict]:
     """调用 Bedrock Claude，支持多轮 tool use 循环"""
+    token_usage = new_token_usage()
     if not AWS_BEARER_TOKEN:
         log("ERROR: AWS_BEARER_TOKEN_BEDROCK not set")
-        return "抱歉，我暂时无法处理这条消息，稍后 Ethan 会回复你。"
+        return "抱歉，我暂时无法处理这条消息，稍后 Ethan 会回复你。", token_usage
 
     try:
         today = now_utc8()
@@ -754,6 +819,7 @@ def generate_reply(content: str, sender_id: str, chat_type: str, chat_id: str, c
         max_rounds = 5
         for _ in range(max_rounds):
             result = call_bedrock(system_prompt, messages)
+            add_token_usage(token_usage, result)
 
             stop_reason = result.get("stopReason", "")
             output_message = result.get("output", {}).get("message", {})
@@ -777,7 +843,7 @@ def generate_reply(content: str, sender_id: str, chat_type: str, chat_id: str, c
                     for k in keys_to_remove:
                         del conversation_history[k]
 
-                return reply
+                return reply, token_usage
 
             elif stop_reason == "tool_use":
                 # 将 assistant 的响应（含 tool_use blocks）加入 messages
@@ -793,6 +859,7 @@ def generate_reply(content: str, sender_id: str, chat_type: str, chat_id: str, c
                         tool_input = tool_use.get("input", {})
 
                         log(f"TOOL_CALL: {tool_name}({json.dumps(tool_input, ensure_ascii=False)[:100]})")
+                        add_usage_tool(token_usage, tool_name)
                         tool_result = execute_tool(tool_name, tool_input, conv_key=conv_key)
                         log(f"TOOL_RESULT: {tool_name} -> {tool_result[:80]}...")
 
@@ -808,18 +875,19 @@ def generate_reply(content: str, sender_id: str, chat_type: str, chat_id: str, c
             else:
                 log(f"WARN: unexpected stopReason: {stop_reason}")
                 reply_parts = [b["text"] for b in output_content if "text" in b]
-                return "\n".join(reply_parts).strip() if reply_parts else "抱歉，处理过程中出现了问题。"
+                reply = "\n".join(reply_parts).strip() if reply_parts else "抱歉，处理过程中出现了问题。"
+                return reply, token_usage
 
         log("WARN: max tool rounds reached")
-        return "抱歉，处理时间过长，请稍后再试。"
+        return "抱歉，处理时间过长，请稍后再试。", token_usage
 
     except urllib.error.HTTPError as e:
         body = e.read().decode() if e.fp else ""
         log(f"ERROR: Bedrock HTTP {e.code}: {body[:200]}")
-        return "抱歉，我暂时无法处理这条消息，稍后 Ethan 会回复你。"
+        return "抱歉，我暂时无法处理这条消息，稍后 Ethan 会回复你。", token_usage
     except Exception as e:
         log(f"ERROR: Bedrock call failed: {e}")
-        return "抱歉，我暂时无法处理这条消息，稍后 Ethan 会回复你。"
+        return "抱歉，我暂时无法处理这条消息，稍后 Ethan 会回复你。", token_usage
 
 
 # =============================================================================
@@ -876,10 +944,11 @@ def get_user_name(open_id: str) -> str:
     return open_id
 
 
-def summarize_for_relay(content: str, conv_key: str) -> str:
+def summarize_for_relay(content: str, conv_key: str) -> tuple[str, dict]:
     """用 AI 解析对话上下文，生成转达摘要"""
+    token_usage = new_token_usage()
     if not AWS_BEARER_TOKEN:
-        return content
+        return content, token_usage
 
     try:
         history = list(conversation_history[conv_key])
@@ -891,24 +960,27 @@ def summarize_for_relay(content: str, conv_key: str) -> str:
             use_tools=False,
             max_tokens=256,
         )
+        add_token_usage(token_usage, result)
 
         output_content = result.get("output", {}).get("message", {}).get("content", [])
         for block in output_content:
             if "text" in block:
-                return block["text"].strip()
-        return content
+                return block["text"].strip(), token_usage
+        return content, token_usage
     except Exception as e:
         log(f"ERROR: summarize_for_relay failed: {e}")
-        return content
+        return content, token_usage
 
 
-def notify_ethan(sender_id: str, chat_type: str, chat_id: str, content: str, conv_key: str):
+def notify_ethan(sender_id: str, chat_type: str, chat_id: str, content: str, conv_key: str) -> dict:
     """转达消息给 Ethan：AI 摘要后发到 Ethan Assistant Group"""
+    token_usage = new_token_usage()
     if not RELAY_CHAT_ID:
         log("ERROR: RELAY_CHAT_ID not set, skipping relay")
-        return
+        return token_usage
     sender_name = get_user_name(sender_id)
-    summary = summarize_for_relay(content, conv_key)
+    summary, relay_usage = summarize_for_relay(content, conv_key)
+    merge_token_usage(token_usage, relay_usage)
     source = "群聊" if chat_type != "p2p" else "私聊"
     msg = f"[转达通知]\n来自: {sender_name}（{source}）\n内容: {summary}"
     try:
@@ -925,6 +997,7 @@ def notify_ethan(sender_id: str, chat_type: str, chat_id: str, content: str, con
             log(f"NOTIFY: forwarded to Ethan from {sender_name}")
     except Exception as e:
         log(f"ERROR: notify_ethan exception: {e}")
+    return token_usage
 
 
 # =============================================================================
@@ -977,17 +1050,21 @@ def process_event(event: dict):
     log(f"RECV: [{chat_type}] from={sender_id} type={message_type} msg_id={message_id} content={content[:80]}")
 
     conv_key = sender_id if chat_type == "p2p" else chat_id
-    reply = generate_reply(content, sender_id, chat_type, chat_id, conv_key)
+    sender_name = get_user_name(sender_id)
+    reply, token_usage = generate_reply(content, sender_id, chat_type, chat_id, conv_key)
 
     if reply:
         if "[RELAY]" in reply:
             reply_clean = reply.replace("[RELAY]", "").strip()
             log(f"RELAY: AI decided to relay, from {sender_id}")
-            notify_ethan(sender_id, chat_type, chat_id, content, conv_key)
+            relay_usage = notify_ethan(sender_id, chat_type, chat_id, content, conv_key)
+            merge_token_usage(token_usage, relay_usage)
             send_reply(message_id, reply_clean)
         else:
             log(f"REPLY: {reply[:80]}...")
             send_reply(message_id, reply)
+
+        record_token_usage(sender_name, chat_type, content, token_usage)
 
 
 # =============================================================================

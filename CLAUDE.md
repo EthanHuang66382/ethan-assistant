@@ -34,6 +34,7 @@ No pip dependencies — uses only stdlib (`urllib.request` for Bedrock HTTP call
 - **Relay mechanism**: if Claude's reply contains `[RELAY]`, the system forwards a summarized message to `RELAY_CHAT_ID` (Ethan Assistant Group) and strips the marker before sending the visible reply
 - **Conversation history**: per-conversation (by `sender_id` for p2p, `chat_id` for group), max 10 turns
 - **PM session memory**: `pm_sessions` remembers the last matched PM skill for 30 minutes per conversation so short follow-ups like "continue" or "option 2" can reuse the same workflow.
+- **Token usage persistence**: each replied event appends one aggregated JSON line to `token_usage.jsonl`; the GitHub Actions workflow commits and pushes that file in an `if: always()` step after the bot process exits.
 - **Markdown stripping**: all replies go through `strip_markdown()` since Feishu text messages render symbols literally
 - **Deduplication**: tracks processed `event_id`s in memory (set, capped at 1000)
 
@@ -52,6 +53,13 @@ Config:
 
 - `PM_SKILLS_ENABLED` defaults to `true`; set `false` to disable.
 - `PM_SKILLS_DIR` defaults to `pm_skills`, relative to this directory.
+- `TOKEN_USAGE_ENABLED` defaults to `true`; set `false` to stop appending `token_usage.jsonl`.
+
+## Token Usage
+
+`record_token_usage()` writes one JSONL row after a reply is sent. A row represents one incoming Feishu event and aggregates all Bedrock Converse calls needed for that event, including multi-round tool use and relay summarization. The JSON keys are `ts`, `user`, `model`, `input_tokens`, `output_tokens`, `total_tokens`, `tools`, `question`, and `chat_type`.
+
+The workflow has `contents: write` permission and a `Persist token usage` step. That step configures git, rebases on latest `main`, stages `token_usage.jsonl`, commits `Update token usage` only when the file changed, and pushes back to the repository.
 
 Smoke test:
 
