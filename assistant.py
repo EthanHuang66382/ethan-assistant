@@ -44,6 +44,16 @@ MAX_HISTORY = 10
 MAX_CONVERSATIONS = 200
 conversation_history: dict[str, list] = defaultdict(list)
 
+# PM/Product skill library
+PM_SKILLS_ENABLED = os.environ.get("PM_SKILLS_ENABLED", "true").lower() not in ("0", "false", "no", "off")
+PM_SKILLS_DIR_RAW = os.environ.get("PM_SKILLS_DIR", "pm_skills")
+PM_SKILLS_DIR = Path(PM_SKILLS_DIR_RAW)
+if not PM_SKILLS_DIR.is_absolute():
+    PM_SKILLS_DIR = SCRIPT_DIR / PM_SKILLS_DIR
+PM_SKILL_CONTENT_LIMIT = 2500
+PM_SESSION_TTL_SECONDS = 30 * 60
+pm_sessions: dict[str, dict] = {}
+
 UTC8 = timezone(timedelta(hours=8))
 
 
@@ -59,6 +69,312 @@ def get_system_prompt() -> str:
     if SYSTEM_PROMPT_FILE.exists():
         return SYSTEM_PROMPT_FILE.read_text().strip()
     return "你是 Ethan Huang 的 AI 助理。请用专业友善的语气回复消息。如果不确定如何回答，可以告知对方你会转达给 Ethan。回复请简洁明了。"
+
+
+# =============================================================================
+# PM Skill Library
+# =============================================================================
+
+PM_SKILL_ALIASES = {
+    "prd-development": [
+        "prd", "product requirements document", "需求文档", "产品需求文档", "产品方案",
+        "需求说明", "产品说明书", "写需求", "写prd",
+    ],
+    "roadmap-planning": [
+        "roadmap", "路线图", "产品路线图", "排期", "规划路线", "季度规划",
+        "半年规划", "q1", "q2", "q3", "q4",
+    ],
+    "prioritization-advisor": [
+        "优先级", "排序", "取舍", "排优先级", "需求排序", "rice", "ice",
+        "value effort", "价值 effort", "只能做", "一个sprint",
+    ],
+    "user-story": [
+        "user story", "用户故事", "用户需求", "验收标准", "acceptance criteria",
+    ],
+    "user-story-splitting": [
+        "拆故事", "拆需求", "故事拆分", "切需求", "需求拆分", "story splitting",
+    ],
+    "epic-breakdown-advisor": [
+        "epic", "史诗", "拆epic", "epic拆解", "大需求拆解", "initiative拆解",
+    ],
+    "problem-statement": [
+        "problem statement", "问题陈述", "定义问题", "问题定义", "问题描述",
+    ],
+    "problem-framing-canvas": [
+        "问题框定", "框定问题", "problem framing", "问题画布",
+    ],
+    "jobs-to-be-done": [
+        "jtbd", "jobs to be done", "用户任务", "用户动机", "job story",
+    ],
+    "opportunity-solution-tree": [
+        "ost", "opportunity solution tree", "机会树", "机会方案树", "机会地图",
+    ],
+    "product-strategy-session": [
+        "产品策略", "strategy", "战略", "产品方向", "战略会",
+    ],
+    "project-management-general": [
+        "项目管理", "项目进度", "进度", "里程碑", "延期", "风险", "依赖",
+        "阻塞", "blocker", "milestone", "risk", "dependency", "owner",
+        "负责人", "跟进", "项目复盘", "项目延期",
+    ],
+}
+
+
+def _strip_quotes(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        return value[1:-1]
+    return value
+
+
+def _extract_frontmatter(text: str) -> tuple[dict, str]:
+    """Parse the simple YAML frontmatter shape used by PM skills."""
+    if not text.startswith("---"):
+        return {}, text
+
+    lines = text.splitlines()
+    end_idx = None
+    for idx in range(1, len(lines)):
+        if lines[idx].strip() == "---":
+            end_idx = idx
+            break
+    if end_idx is None:
+        return {}, text
+
+    metadata: dict[str, str | list[str]] = {}
+    current_key = ""
+    for raw_line in lines[1:end_idx]:
+        line = raw_line.rstrip()
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        if not raw_line.startswith(" ") and ":" in line:
+            key, value = line.split(":", 1)
+            current_key = key.strip()
+            value = value.strip()
+            if value in (">", ">-", "|", "|-"):
+                metadata[current_key] = ""
+            elif value:
+                metadata[current_key] = _strip_quotes(value)
+            else:
+                metadata[current_key] = []
+            continue
+
+        if stripped.startswith("- ") and current_key:
+            existing = metadata.get(current_key)
+            if not isinstance(existing, list):
+                existing = []
+                metadata[current_key] = existing
+            existing.append(_strip_quotes(stripped[2:]))
+            continue
+
+        if current_key and isinstance(metadata.get(current_key), str):
+            metadata[current_key] = (metadata[current_key] + " " + stripped).strip()
+
+    body = "\n".join(lines[end_idx + 1:]).strip()
+    return metadata, body
+
+
+def _metadata_text(value) -> str:
+    if isinstance(value, list):
+        return " ".join(str(v) for v in value)
+    return str(value or "")
+
+
+def _tokenize(text: str) -> set[str]:
+    text = text.lower()
+    tokens = set(re.findall(r"[a-z0-9][a-z0-9_-]*|[\u4e00-\u9fff]{2,}", text))
+    return {token.replace("_", "-") for token in tokens if len(token) > 1}
+
+
+def load_pm_skills() -> list[dict]:
+    if not PM_SKILLS_ENABLED:
+        return []
+    if not PM_SKILLS_DIR.exists():
+        log(f"WARN: PM skills directory not found: {PM_SKILLS_DIR}")
+        return []
+
+    skills = []
+    for skill_file in sorted(PM_SKILLS_DIR.glob("*/SKILL.md")):
+        try:
+            raw = skill_file.read_text(encoding="utf-8")
+        except Exception as e:
+            log(f"WARN: failed to read PM skill {skill_file}: {e}")
+            continue
+
+        metadata, _ = _extract_frontmatter(raw)
+        name = _metadata_text(metadata.get("name")) or skill_file.parent.name
+        description = _metadata_text(metadata.get("description"))
+        intent = _metadata_text(metadata.get("intent"))
+        best_for = metadata.get("best_for") if isinstance(metadata.get("best_for"), list) else []
+        scenarios = metadata.get("scenarios") if isinstance(metadata.get("scenarios"), list) else []
+        skill_type = _metadata_text(metadata.get("type")) or "component"
+        search_text = " ".join([
+            name,
+            description,
+            intent,
+            _metadata_text(best_for),
+            _metadata_text(scenarios),
+            skill_type,
+        ]).lower()
+        skills.append({
+            "name": name,
+            "description": description,
+            "intent": intent,
+            "best_for": best_for,
+            "scenarios": scenarios,
+            "type": skill_type,
+            "path": skill_file,
+            "search_text": search_text,
+            "tokens": _tokenize(search_text),
+        })
+    log(f"Loaded {len(skills)} PM skills from {PM_SKILLS_DIR}")
+    return skills
+
+
+PM_SKILLS = load_pm_skills()
+
+
+def _is_pm_followup(query: str) -> bool:
+    compact = re.sub(r"\s+", "", query.strip().lower())
+    if not compact:
+        return False
+    if re.fullmatch(r"(选)?[0-9一二三四五六七八九十]+", compact):
+        return True
+    followup_markers = [
+        "继续", "展开", "详细", "按这个", "就这个", "用这个", "下一步", "帮我展开",
+        "生成", "写出来", "给模板", "继续问", "继续做", "ok", "好的", "可以",
+    ]
+    return any(marker in compact for marker in followup_markers) and len(compact) <= 20
+
+
+def _score_pm_skill(skill: dict, query: str, query_tokens: set[str], conv_key: str = "") -> int:
+    query_lower = query.lower()
+    score = 0
+
+    skill_name = skill["name"]
+    if skill_name in query_lower:
+        score += 30
+    for name_part in skill_name.split("-"):
+        if len(name_part) > 2 and name_part in query_lower:
+            score += 3
+
+    for alias in PM_SKILL_ALIASES.get(skill_name, []):
+        if alias.lower() in query_lower:
+            score += 25
+
+    score += len(query_tokens & skill["tokens"]) * 2
+
+    session = pm_sessions.get(conv_key) if conv_key else None
+    if session and session.get("skill_name") == skill_name and _is_pm_followup(query):
+        score += 40
+
+    return score
+
+
+def _select_pm_skill(query: str, conv_key: str = "") -> list[tuple[int, dict]]:
+    if not PM_SKILLS_ENABLED or not PM_SKILLS:
+        return []
+    query_tokens = _tokenize(query)
+    scored = []
+    for skill in PM_SKILLS:
+        score = _score_pm_skill(skill, query, query_tokens, conv_key)
+        if score > 0:
+            scored.append((score, skill))
+    scored.sort(key=lambda item: (-item[0], item[1]["name"]))
+    return scored[:3]
+
+
+def _extract_named_sections(body: str, section_names: list[str]) -> str:
+    sections = []
+    lines = body.splitlines()
+    idx = 0
+    wanted = {f"## {name}".lower() for name in section_names}
+    while idx < len(lines):
+        line = lines[idx].strip().lower()
+        if line in wanted:
+            chunk = [lines[idx]]
+            idx += 1
+            while idx < len(lines) and not lines[idx].startswith("## "):
+                chunk.append(lines[idx])
+                idx += 1
+            sections.append("\n".join(chunk).strip())
+            continue
+        idx += 1
+    return "\n\n".join(section for section in sections if section)
+
+
+def _truncate_text(text: str, limit: int = PM_SKILL_CONTENT_LIMIT) -> str:
+    if len(text) <= limit:
+        return text
+    truncated = text[:limit].rsplit("\n", 1)[0].strip()
+    return truncated + "\n...[truncated]"
+
+
+def _read_skill_excerpt(skill: dict) -> str:
+    raw = skill["path"].read_text(encoding="utf-8")
+    metadata, body = _extract_frontmatter(raw)
+    frontmatter = "\n".join([
+        f"name: {_metadata_text(metadata.get('name'))}",
+        f"description: {_metadata_text(metadata.get('description'))}",
+        f"type: {_metadata_text(metadata.get('type'))}",
+    ]).strip()
+    sections = _extract_named_sections(body, ["Purpose", "Key Concepts", "Application"])
+    if not sections:
+        sections = body
+    return _truncate_text(frontmatter + "\n\n" + sections)
+
+
+def execute_get_pm_guidance(query: str, conv_key: str = "") -> str:
+    if not PM_SKILLS_ENABLED:
+        return "PM skill library is disabled by PM_SKILLS_ENABLED=false."
+
+    _cleanup_pm_sessions()
+    matches = _select_pm_skill(query, conv_key)
+    if not matches:
+        return "未找到相关产品/项目管理建议。请让用户更具体描述需求，例如 PRD、roadmap、优先级、用户故事、项目风险、里程碑或进度跟进。"
+
+    primary_score, primary = matches[0]
+    try:
+        excerpt = _read_skill_excerpt(primary)
+    except Exception as e:
+        log(f"ERROR: failed to read matched PM skill {primary['name']}: {e}")
+        return "读取产品/项目管理 skill 时出错，请稍后再试。"
+
+    if conv_key:
+        pm_sessions[conv_key] = {
+            "skill_name": primary["name"],
+            "updated_at": time.time(),
+        }
+        _cleanup_pm_sessions()
+
+    candidates = []
+    for score, skill in matches:
+        candidates.append(
+            f"- {skill['name']} ({skill['type']}, score={score}): {skill['description']}"
+        )
+
+    return (
+        "PM guidance match\n"
+        f"Primary skill: {primary['name']}\n"
+        f"Type: {primary['type']}\n"
+        f"Description: {primary['description']}\n\n"
+        "Skill excerpt:\n"
+        f"{excerpt}\n\n"
+        "Top candidates:\n"
+        + "\n".join(candidates)
+    )
+
+
+def _cleanup_pm_sessions():
+    now = time.time()
+    expired = [
+        key for key, session in pm_sessions.items()
+        if now - session.get("updated_at", 0) > PM_SESSION_TTL_SECONDS
+    ]
+    for key in expired:
+        del pm_sessions[key]
 
 
 # =============================================================================
@@ -116,6 +432,24 @@ TOOLS = [
                         }
                     },
                     "required": []
+                }
+            }
+        }
+    },
+    {
+        "toolSpec": {
+            "name": "get_pm_guidance",
+            "description": "获取产品管理或项目管理的方法论指导。当用户问到 PRD、roadmap、优先级排序、用户故事、epic 拆解、问题定义、项目风险、里程碑、进度、负责人、依赖或跟进机制等问题时使用。",
+            "inputSchema": {
+                "json": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "用户问题的核心意图关键词。可以包含中文或英文，例如 PRD、需求文档、roadmap、优先级、项目延期、风险、里程碑。"
+                        }
+                    },
+                    "required": ["query"]
                 }
             }
         }
@@ -345,7 +679,7 @@ def execute_search_chat_messages(chat_id: str = "", chat_name: str = "", limit: 
     return f"群聊「{label}」近期消息（最新在前）:\n{msg_text}"
 
 
-def execute_tool(tool_name: str, tool_input: dict) -> str:
+def execute_tool(tool_name: str, tool_input: dict, conv_key: str = "") -> str:
     """路由并执行工具调用"""
     if tool_name == "query_freebusy":
         return execute_query_freebusy(
@@ -358,6 +692,11 @@ def execute_tool(tool_name: str, tool_input: dict) -> str:
             chat_id=tool_input.get("chat_id", ""),
             chat_name=tool_input.get("chat_name", ""),
             limit=tool_input.get("limit", 50),
+        )
+    elif tool_name == "get_pm_guidance":
+        return execute_get_pm_guidance(
+            query=tool_input.get("query", ""),
+            conv_key=conv_key,
         )
     return f"未知工具: {tool_name}"
 
@@ -454,7 +793,7 @@ def generate_reply(content: str, sender_id: str, chat_type: str, chat_id: str, c
                         tool_input = tool_use.get("input", {})
 
                         log(f"TOOL_CALL: {tool_name}({json.dumps(tool_input, ensure_ascii=False)[:100]})")
-                        tool_result = execute_tool(tool_name, tool_input)
+                        tool_result = execute_tool(tool_name, tool_input, conv_key=conv_key)
                         log(f"TOOL_RESULT: {tool_name} -> {tool_result[:80]}...")
 
                         tool_results.append({

@@ -1,0 +1,17 @@
+Product Manager Skills attribution
+
+The product management skill files in this directory are derived from:
+https://github.com/deanpeters/Product-Manager-Skills
+
+Original project:
+Product Manager Skills by Dean Peters and contributors.
+
+License:
+The upstream project is distributed under CC BY-NC-SA 4.0.
+See the upstream repository license for the full terms:
+https://github.com/deanpeters/Product-Manager-Skills/blob/main/LICENSE
+
+Local addition:
+The project-management-general skill was added locally for EthanAssistant to cover
+general project management workflows that are adjacent to, but distinct from,
+product management.

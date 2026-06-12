@@ -13,7 +13,32 @@
 - **AI 对话**：监听所有飞书消息（私聊+群聊），用 Claude 生成回复
 - **日历查询**：查询 Ethan / Aaron 的忙闲状态（支持今天、明天、本周、下周、未来N天，最多一个月）
 - **上下文记忆**：按会话维护最近 10 轮对话历史
+- **产品/项目管理指导**：通过本地 PM skill 库回答 PRD、roadmap、优先级、用户故事、epic、问题定义、项目风险、里程碑、进度等问题
 - **消息转达**：AI 判断需要转达时，自动通知 Ethan（发送到 Ethan Assistant Group）
+
+## PM 技能库
+
+`assistant.py` 提供 `get_pm_guidance` 工具。Claude 判断用户在问产品管理或项目管理问题时，会调用该工具；Python 端从 `pm_skills/` 本地匹配最相关的 `SKILL.md`，返回一个主要 skill 片段和最多 3 个候选 skill 元数据。
+
+设计要点：
+
+- 启动时只扫描 skill frontmatter 元数据，不把 49 个 skill 全部放进 prompt
+- 每次工具调用只返回一个主要 skill 的有限片段，控制 token 消耗
+- 支持中文 alias 匹配，如"需求文档/PRD""排期/roadmap""优先级/取舍""项目延期/风险/里程碑"
+- 使用 `pm_sessions` 在同一会话内记住最近一次 PM skill，用户回复"继续""选 2""展开"时可延续上下文
+- 项目管理通用能力由本地 `pm_skills/project-management-general/SKILL.md` 补充
+
+技能来源：
+
+- 产品管理 skills 来自 `deanpeters/Product-Manager-Skills`
+- 上游许可为 CC BY-NC-SA 4.0，attribution 见 `pm_skills/LICENSE`
+
+### PM 环境变量
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `PM_SKILLS_ENABLED` | `true` | 设为 `false` 可禁用 PM skill 工具 |
+| `PM_SKILLS_DIR` | `pm_skills` | skill 目录，相对 `EthanAssistant/` |
 
 ## 部署 (GitHub Actions)
 
@@ -34,6 +59,8 @@
 | `OPEN_ID_THOMAS` | Thomas Chang 的 open_id |
 | `OPEN_ID_DERIC` | Deric Chan 的 open_id（Thomas 第二账号） |
 | `RELAY_CHAT_ID` | 转达通知发送的群 chat_id |
+| `PM_SKILLS_ENABLED` | 可选，是否启用 PM skill 库 |
+| `PM_SKILLS_DIR` | 可选，PM skill 目录 |
 
 ### 飞书应用权限
 
@@ -52,6 +79,20 @@
 
 编辑 `system_prompt.txt` 调整 Assistant 的回复风格和能力范围。
 
+## 测试
+
+```bash
+cd EthanAssistant/
+python3 -m py_compile assistant.py
+python3 - <<'PY'
+import assistant
+for q in ["帮我写 PRD", "12 个需求只能做一个 sprint，怎么排优先级", "项目延期了，怎么跟进风险和里程碑"]:
+    print(q)
+    print(assistant.execute_get_pm_guidance(q, conv_key="smoke")[:500])
+    print("---")
+PY
+```
+
 ## 项目结构
 
 ```
@@ -59,6 +100,7 @@ EthanAssistant/
 ├── .github/workflows/assistant.yml  # GitHub Actions 部署
 ├── assistant.py                     # 主服务脚本
 ├── system_prompt.txt                # AI 系统提示词
+├── pm_skills/                       # 产品/项目管理 skill 库
 ├── requirements.txt                 # 依赖（纯 stdlib）
 └── README.md
 ```
