@@ -27,7 +27,7 @@ jobs:
           node-version: '20'
 
       - name: Install lark-cli
-        run: npm install -g @larksuite/cli@1
+        run: npm install -g @larksuite/cli@1.0.56
 
       - name: Configure lark-cli
         run: echo "${{ secrets.LARK_APP_SECRET }}" | lark-cli config init --app-id "${{ secrets.LARK_APP_ID }}" --app-secret-stdin --brand lark

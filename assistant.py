@@ -553,10 +553,15 @@ def query_freebusy_raw(user_id: str, start_date: str, end_date: str) -> list | N
             log(f"ERROR: freebusy query failed: {result.stderr}")
             return None
         data = json.loads(result.stdout)
-        if data.get("code") == 0:
-            return data.get("data", {}).get("freebusy_list", [])
-        if data.get("ok") and "data" in data:
-            return data["data"]
+        # lark-cli output format varies by version:
+        #   raw API envelope: {"code":0,"data":{"freebusy_list":[...]}}
+        #   ok envelope:      {"ok":true,"data":{"freebusy_list":[...]}} or {"ok":true,"data":[...]}
+        if data.get("code") == 0 or (data.get("ok") and "data" in data):
+            payload = data.get("data", [])
+            if isinstance(payload, dict):
+                return payload.get("freebusy_list", [])
+            if isinstance(payload, list):
+                return payload
         log(f"ERROR: freebusy unexpected response: {json.dumps(data)[:200]}")
         return None
     except Exception as e:
