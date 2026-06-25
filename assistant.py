@@ -1076,10 +1076,17 @@ def process_event(event: dict):
 # Main
 # =============================================================================
 
-def main():
-    log("=== Ethan Assistant started (tool-use mode) ===")
-    log(f"Model: {BEDROCK_MODEL_ID}, Region: {AWS_REGION}")
+# 启动重试配置：lark-cli 取 tenant access token 偶发 HTTP 429，
+# 不重试就要等下一个 5 小时 cron，期间 bot 全程不可用。
+MAX_STARTUP_ATTEMPTS = 5
+STARTUP_BACKOFF_SECONDS = [10, 30, 60, 120, 300]
 
+
+def start_consumer():
+    """启动 lark-cli event consume 并等待 ready 标记。
+
+    成功返回 proc；启动失败（如认证 429）清理子进程后返回 None。
+    """
     cmd = [LARK_CLI, "event", "consume", "im.message.receive_v1", "--as", "bot"]
     log(f"Starting: {' '.join(cmd)}")
 
@@ -1092,7 +1099,6 @@ def main():
         bufsize=1,
     )
 
-    ready = False
     while True:
         line = proc.stderr.readline()
         if not line:
@@ -1100,12 +1106,33 @@ def main():
         line = line.strip()
         log(f"[event] {line}")
         if "[event] ready" in line:
-            ready = True
-            break
+            return proc
 
-    if not ready:
-        log("ERROR: event consume did not become ready")
+    # 没等到 ready（子进程已退出或 stderr 关闭），清理后返回 None
+    try:
         proc.terminate()
+        proc.wait(timeout=5)
+    except Exception:
+        proc.kill()
+    return None
+
+
+def main():
+    log("=== Ethan Assistant started (tool-use mode) ===")
+    log(f"Model: {BEDROCK_MODEL_ID}, Region: {AWS_REGION}")
+
+    proc = None
+    for attempt in range(1, MAX_STARTUP_ATTEMPTS + 1):
+        proc = start_consumer()
+        if proc:
+            break
+        if attempt < MAX_STARTUP_ATTEMPTS:
+            delay = STARTUP_BACKOFF_SECONDS[min(attempt - 1, len(STARTUP_BACKOFF_SECONDS) - 1)]
+            log(f"WARN: consumer not ready (attempt {attempt}/{MAX_STARTUP_ATTEMPTS}), retrying in {delay}s...")
+            time.sleep(delay)
+
+    if not proc:
+        log(f"ERROR: event consume did not become ready after {MAX_STARTUP_ATTEMPTS} attempts")
         sys.exit(1)
 
     log("Event consumer ready, listening for messages...")
