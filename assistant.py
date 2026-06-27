@@ -20,7 +20,6 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).parent
 SYSTEM_PROMPT_FILE = SCRIPT_DIR / "system_prompt.txt"
-TOKEN_USAGE_FILE = SCRIPT_DIR / "token_usage.jsonl"
 
 LARK_CLI = os.environ.get("LARK_CLI", "lark-cli")
 BOT_OPEN_ID = os.environ.get("BOT_OPEN_ID", "")
@@ -29,7 +28,14 @@ BOT_OPEN_ID = os.environ.get("BOT_OPEN_ID", "")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 BEDROCK_MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-20250514-v1:0")
 AWS_BEARER_TOKEN = os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "")
+
+# Token 用量记录：写入 Lark 多维表格（私有 wiki，不再落地 public repo）
+# 表位于 "PMO 工作desk" 下的 "BD Agent Token 用量记录"
 TOKEN_USAGE_ENABLED = os.environ.get("TOKEN_USAGE_ENABLED", "true").lower() not in ("0", "false", "no", "off")
+TOKEN_USAGE_BASE_TOKEN = os.environ.get("TOKEN_USAGE_BASE_TOKEN", "H1Dpb7wrZabp9XsWiMglgZdvgWf")
+TOKEN_USAGE_TABLE_ID = os.environ.get("TOKEN_USAGE_TABLE_ID", "tblcC3rCjJIuMt3V")
+# 写入表的 question 截断长度，避免完整业务内容留存
+TOKEN_USAGE_QUESTION_LIMIT = 200
 
 # 用户 ID 映射（从环境变量读取）
 USERS = {
@@ -113,26 +119,53 @@ def model_label() -> str:
 
 
 def record_token_usage(user_name: str, chat_type: str, question: str, usage: dict):
+    """把单条消息的 token 用量写入 Lark 多维表格。
+
+    写入失败只记日志，绝不影响 bot 回复。出于隐私，question 截断后存表，
+    CI 日志只打印聚合数字（不含 question 原文）。
+    """
     if not TOKEN_USAGE_ENABLED or not usage.get("total_tokens"):
         return
+    if not TOKEN_USAGE_BASE_TOKEN or not TOKEN_USAGE_TABLE_ID:
+        log("WARN: token usage table not configured, skipping record")
+        return
 
-    row = {
-        "ts": now_utc8().strftime("%Y-%m-%d %H:%M:%S"),
-        "user": user_name,
-        "model": model_label(),
-        "input_tokens": usage.get("input_tokens", 0),
-        "output_tokens": usage.get("output_tokens", 0),
-        "total_tokens": usage.get("total_tokens", 0),
-        "tools": usage.get("tools", []),
-        "question": question,
-        "chat_type": chat_type,
-    }
+    question_trunc = (question or "").strip().replace("\n", " ")
+    if len(question_trunc) > TOKEN_USAGE_QUESTION_LIMIT:
+        question_trunc = question_trunc[:TOKEN_USAGE_QUESTION_LIMIT] + "…"
+
+    row = [
+        now_utc8().strftime("%Y-%m-%d %H:%M:%S"),
+        user_name or "",
+        model_label(),
+        int(usage.get("input_tokens", 0) or 0),
+        int(usage.get("output_tokens", 0) or 0),
+        int(usage.get("total_tokens", 0) or 0),
+        ",".join(usage.get("tools", [])) or "none",
+        question_trunc,
+        chat_type or "",
+    ]
+    payload = json.dumps({
+        "fields": ["时间", "用户", "模型", "输入Token", "输出Token", "总Token", "调用工具", "问题", "会话类型"],
+        "rows": [row],
+    }, ensure_ascii=False)
+
     try:
-        with TOKEN_USAGE_FILE.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
-        log(f"TOKEN_USAGE: {json.dumps(row, ensure_ascii=False)}")
+        result = subprocess.run(
+            [LARK_CLI, "base", "+record-batch-create",
+             "--base-token", TOKEN_USAGE_BASE_TOKEN,
+             "--table-id", TOKEN_USAGE_TABLE_ID,
+             "--json", payload,
+             "--as", "bot"],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.returncode != 0:
+            log(f"ERROR: token usage write failed: {result.stderr[:200]}")
+        else:
+            # 日志只打印数字，不含 question 原文（CI 日志是 public）
+            log(f"TOKEN_USAGE: user={user_name} total={row[5]} (in={row[3]}/out={row[4]}) tools={row[6]}")
     except Exception as e:
-        log(f"ERROR: failed to write token usage: {e}")
+        log(f"ERROR: record_token_usage exception: {e}")
 
 
 # =============================================================================
@@ -570,14 +603,32 @@ def query_freebusy_raw(user_id: str, start_date: str, end_date: str) -> list | N
 
 
 def parse_utc_to_local(utc_str: str, offset_hours: int = 8) -> datetime:
-    """将 UTC 时间字符串转为本地时间（支持毫秒和 +00:00 格式）"""
-    cleaned = utc_str.split(".")[0].rstrip("Z")
-    if "+" in cleaned:
-        cleaned = cleaned[:cleaned.rindex("+")]
-    elif cleaned.endswith("-00:00"):
-        cleaned = cleaned[:-6]
-    dt = datetime.strptime(cleaned, "%Y-%m-%dT%H:%M:%S")
-    return dt + timedelta(hours=offset_hours)
+    """将日历时间字符串转为目标时区的本地时间（naive datetime）。
+
+    正确处理 RFC3339 offset：Lark 通常返回 UTC（Z / +00:00），但 offset 本身
+    是合法输入。先按真实时区解析，再换算到目标 offset；解析失败时回退到旧逻辑
+    （去掉 offset 后按 naive 处理）以保证健壮性。
+    """
+    target_tz = timezone(timedelta(hours=offset_hours))
+    iso = utc_str.strip()
+    # datetime.fromisoformat 在 3.11 支持 Z 后缀；老版本需替换为 +00:00
+    if iso.endswith("Z"):
+        iso = iso[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(iso)
+        if dt.tzinfo is None:
+            # 无时区信息：按 UTC 解释（保持与历史行为一致）
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(target_tz).replace(tzinfo=None)
+    except ValueError:
+        # 回退：剥掉小数秒和 offset，按 UTC + 固定偏移处理
+        cleaned = utc_str.split(".")[0].rstrip("Z")
+        if "+" in cleaned:
+            cleaned = cleaned[:cleaned.rindex("+")]
+        elif cleaned.endswith("-00:00"):
+            cleaned = cleaned[:-6]
+        dt = datetime.strptime(cleaned, "%Y-%m-%dT%H:%M:%S")
+        return dt + timedelta(hours=offset_hours)
 
 
 def merge_time_slots(slots: list[tuple[datetime, datetime]]) -> list[tuple[datetime, datetime]]:
@@ -1081,13 +1132,23 @@ def process_event(event: dict):
 MAX_STARTUP_ATTEMPTS = 5
 STARTUP_BACKOFF_SECONDS = [10, 30, 60, 120, 300]
 CONSUMER_RESTART_BACKOFF_SECONDS = 30
+# 启动看门狗：等待 ready 标记的上限。lark-cli 卡住但不退出也不打印 ready 时，
+# 没有超时会让 readline 无限阻塞，重试逻辑永远不触发。
+STARTUP_READY_TIMEOUT_SECONDS = 90
+# 熔断：ready 之后若 consumer 在 CONSUMER_CRASH_WINDOW 秒内连续异常退出
+# 超过 MAX_CONSECUTIVE_CRASHES 次，说明是永久性故障（配置/权限失效），
+# 直接失败退出让 workflow 显性报错，而不是无限空转。
+CONSUMER_CRASH_WINDOW_SECONDS = 300
+MAX_CONSECUTIVE_CRASHES = 4
 
 
 def start_consumer():
-    """启动 lark-cli event consume 并等待 ready 标记。
+    """启动 lark-cli event consume 并在看门狗超时内等待 ready 标记。
 
-    成功返回 proc；启动失败（如认证 429）清理子进程后返回 None。
+    成功返回 proc；启动失败（认证 429、卡住超时、子进程退出）清理后返回 None。
     """
+    import threading
+
     cmd = [LARK_CLI, "event", "consume", "im.message.receive_v1", "--as", "bot"]
     log(f"Starting: {' '.join(cmd)}")
 
@@ -1100,16 +1161,33 @@ def start_consumer():
         bufsize=1,
     )
 
-    while True:
-        line = proc.stderr.readline()
-        if not line:
-            break
-        line = line.strip()
-        log(f"[event] {line}")
-        if "[event] ready" in line:
-            return proc
+    ready_event = threading.Event()
 
-    # 没等到 ready（子进程已退出或 stderr 关闭），清理后返回 None
+    def watch_stderr():
+        # 在后台线程读 stderr，命中 ready 标记就置位事件。
+        # readline 在子进程被 kill / stderr 关闭后会返回空串退出循环。
+        try:
+            while True:
+                line = proc.stderr.readline()
+                if not line:
+                    break
+                line = line.strip()
+                if line:
+                    log(f"[event] {line}")
+                if "[event] ready" in line:
+                    ready_event.set()
+                    return
+        except Exception:
+            pass
+
+    watcher = threading.Thread(target=watch_stderr, daemon=True)
+    watcher.start()
+
+    if ready_event.wait(timeout=STARTUP_READY_TIMEOUT_SECONDS):
+        return proc
+
+    # 超时仍未 ready（卡住或慢启动）：清理子进程后返回 None
+    log(f"WARN: consumer not ready within {STARTUP_READY_TIMEOUT_SECONDS}s")
     try:
         proc.terminate()
         proc.wait(timeout=5)
@@ -1155,6 +1233,10 @@ def main():
             if line:
                 log(f"[event] {line}")
 
+    # 熔断状态：记录最近一次 ready 之后连续“短命退出”的次数和首次时间
+    crash_count = 0
+    crash_window_start = 0.0
+
     while True:
         proc = None
         for attempt in range(1, MAX_STARTUP_ATTEMPTS + 1):
@@ -1172,6 +1254,7 @@ def main():
 
         current_proc["proc"] = proc
         log("Event consumer ready, listening for messages...")
+        started_at = time.monotonic()
 
         stderr_thread = threading.Thread(target=drain_stderr, args=(proc,), daemon=True)
         stderr_thread.start()
@@ -1194,8 +1277,26 @@ def main():
 
         proc.wait()
         current_proc["proc"] = None
-        log(f"Event consume exited with code {proc.returncode}")
-        log(f"WARN: restarting event consumer in {CONSUMER_RESTART_BACKOFF_SECONDS}s...")
+        uptime = time.monotonic() - started_at
+        log(f"Event consume exited with code {proc.returncode} after {uptime:.0f}s uptime")
+
+        # 熔断：只统计“ready 后很快就崩”的退出（短命）。长时间正常运行后的退出
+        # （如网络抖动、cron 周期到期）重置计数，避免误熔断。
+        now = time.monotonic()
+        if uptime < CONSUMER_CRASH_WINDOW_SECONDS:
+            if crash_count == 0 or (now - crash_window_start) > CONSUMER_CRASH_WINDOW_SECONDS:
+                crash_window_start = now
+                crash_count = 1
+            else:
+                crash_count += 1
+            if crash_count >= MAX_CONSECUTIVE_CRASHES:
+                log(f"ERROR: consumer crashed {crash_count} times within "
+                    f"{CONSUMER_CRASH_WINDOW_SECONDS}s — likely a permanent failure, exiting")
+                sys.exit(1)
+        else:
+            crash_count = 0
+
+        log(f"WARN: restarting event consumer in {CONSUMER_RESTART_BACKOFF_SECONDS}s (crash_count={crash_count})...")
         time.sleep(CONSUMER_RESTART_BACKOFF_SECONDS)
 
 

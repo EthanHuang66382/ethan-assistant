@@ -12,7 +12,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   assistant:
@@ -51,18 +51,3 @@ jobs:
           OPEN_ID_DERIC: ${{ secrets.OPEN_ID_DERIC }}
           RELAY_CHAT_ID: ${{ secrets.RELAY_CHAT_ID }}
         run: python3 assistant.py
-
-      - name: Persist token usage
-        if: always()
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          touch token_usage.jsonl
-          git pull --rebase --autostash origin main
-          git add token_usage.jsonl
-          if ! git diff --cached --quiet; then
-            git commit -m "Update token usage"
-            git push
-          else
-            echo "No token usage changes to persist"
-          fi
