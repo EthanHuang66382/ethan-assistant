@@ -1080,6 +1080,7 @@ def process_event(event: dict):
 # 不重试就要等下一个 5 小时 cron，期间 bot 全程不可用。
 MAX_STARTUP_ATTEMPTS = 5
 STARTUP_BACKOFF_SECONDS = [10, 30, 60, 120, 300]
+CONSUMER_RESTART_BACKOFF_SECONDS = 30
 
 
 def start_consumer():
@@ -1121,34 +1122,25 @@ def main():
     log("=== Ethan Assistant started (tool-use mode) ===")
     log(f"Model: {BEDROCK_MODEL_ID}, Region: {AWS_REGION}")
 
-    proc = None
-    for attempt in range(1, MAX_STARTUP_ATTEMPTS + 1):
-        proc = start_consumer()
-        if proc:
-            break
-        if attempt < MAX_STARTUP_ATTEMPTS:
-            delay = STARTUP_BACKOFF_SECONDS[min(attempt - 1, len(STARTUP_BACKOFF_SECONDS) - 1)]
-            log(f"WARN: consumer not ready (attempt {attempt}/{MAX_STARTUP_ATTEMPTS}), retrying in {delay}s...")
-            time.sleep(delay)
-
-    if not proc:
-        log(f"ERROR: event consume did not become ready after {MAX_STARTUP_ATTEMPTS} attempts")
-        sys.exit(1)
-
-    log("Event consumer ready, listening for messages...")
+    current_proc = {"proc": None}
 
     def shutdown(signum, frame):
         log(f"Received signal {signum}, shutting down...")
+        proc = current_proc.get("proc")
         try:
-            if proc.stdin:
+            if proc and proc.stdin:
                 proc.stdin.close()
-            proc.wait(timeout=10)
+            if proc:
+                proc.wait(timeout=10)
         except Exception:
-            proc.terminate()
+            if proc:
+                proc.terminate()
             try:
-                proc.wait(timeout=5)
+                if proc:
+                    proc.wait(timeout=5)
             except Exception:
-                proc.kill()
+                if proc:
+                    proc.kill()
         log("=== Ethan Assistant stopped ===")
         sys.exit(0)
 
@@ -1157,35 +1149,54 @@ def main():
 
     import threading
 
-    def drain_stderr():
+    def drain_stderr(proc):
         for line in proc.stderr:
             line = line.strip()
             if line:
                 log(f"[event] {line}")
 
-    stderr_thread = threading.Thread(target=drain_stderr, daemon=True)
-    stderr_thread.start()
+    while True:
+        proc = None
+        for attempt in range(1, MAX_STARTUP_ATTEMPTS + 1):
+            proc = start_consumer()
+            if proc:
+                break
+            if attempt < MAX_STARTUP_ATTEMPTS:
+                delay = STARTUP_BACKOFF_SECONDS[min(attempt - 1, len(STARTUP_BACKOFF_SECONDS) - 1)]
+                log(f"WARN: consumer not ready (attempt {attempt}/{MAX_STARTUP_ATTEMPTS}), retrying in {delay}s...")
+                time.sleep(delay)
 
-    for line in proc.stdout:
-        line = line.strip()
-        if not line:
-            continue
+        if not proc:
+            log(f"ERROR: event consume did not become ready after {MAX_STARTUP_ATTEMPTS} attempts")
+            sys.exit(1)
 
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            log(f"WARN: invalid JSON: {line[:80]}")
-            continue
+        current_proc["proc"] = proc
+        log("Event consumer ready, listening for messages...")
 
-        try:
-            process_event(event)
-        except Exception as e:
-            log(f"ERROR: process_event failed: {e}")
+        stderr_thread = threading.Thread(target=drain_stderr, args=(proc,), daemon=True)
+        stderr_thread.start()
 
-    proc.wait()
-    log(f"Event consume exited with code {proc.returncode}")
-    log("=== Ethan Assistant stopped ===")
-    sys.exit(proc.returncode)
+        for line in proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
+
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                log(f"WARN: invalid JSON: {line[:80]}")
+                continue
+
+            try:
+                process_event(event)
+            except Exception as e:
+                log(f"ERROR: process_event failed: {e}")
+
+        proc.wait()
+        current_proc["proc"] = None
+        log(f"Event consume exited with code {proc.returncode}")
+        log(f"WARN: restarting event consumer in {CONSUMER_RESTART_BACKOFF_SECONDS}s...")
+        time.sleep(CONSUMER_RESTART_BACKOFF_SECONDS)
 
 
 if __name__ == "__main__":
