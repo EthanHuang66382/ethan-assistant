@@ -34,8 +34,9 @@ AWS_BEARER_TOKEN = os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "")
 TOKEN_USAGE_ENABLED = os.environ.get("TOKEN_USAGE_ENABLED", "true").lower() not in ("0", "false", "no", "off")
 TOKEN_USAGE_BASE_TOKEN = os.environ.get("TOKEN_USAGE_BASE_TOKEN", "H1Dpb7wrZabp9XsWiMglgZdvgWf")
 TOKEN_USAGE_TABLE_ID = os.environ.get("TOKEN_USAGE_TABLE_ID", "tblcC3rCjJIuMt3V")
-# 写入表的 question 截断长度，避免完整业务内容留存
+# 写入表的 question/answer 截断长度，避免完整业务内容留存
 TOKEN_USAGE_QUESTION_LIMIT = 200
+TOKEN_USAGE_ANSWER_LIMIT = 500
 
 # 用户 ID 映射（从环境变量读取）
 USERS = {
@@ -118,11 +119,19 @@ def model_label() -> str:
     return BEDROCK_MODEL_ID
 
 
-def record_token_usage(user_name: str, chat_type: str, question: str, usage: dict):
+def _truncate(text: str, limit: int) -> str:
+    """单行化并截断文本，超长加省略号。"""
+    t = (text or "").strip().replace("\n", " ")
+    if len(t) > limit:
+        return t[:limit] + "…"
+    return t
+
+
+def record_token_usage(user_name: str, chat_type: str, question: str, answer: str, usage: dict):
     """把单条消息的 token 用量写入 Lark 多维表格。
 
-    写入失败只记日志，绝不影响 bot 回复。出于隐私，question 截断后存表，
-    CI 日志只打印聚合数字（不含 question 原文）。
+    写入失败只记日志，绝不影响 bot 回复。出于隐私，question/answer 截断后存表，
+    CI 日志只打印聚合数字（不含原文）。
     """
     if not TOKEN_USAGE_ENABLED or not usage.get("total_tokens"):
         return
@@ -130,9 +139,8 @@ def record_token_usage(user_name: str, chat_type: str, question: str, usage: dic
         log("WARN: token usage table not configured, skipping record")
         return
 
-    question_trunc = (question or "").strip().replace("\n", " ")
-    if len(question_trunc) > TOKEN_USAGE_QUESTION_LIMIT:
-        question_trunc = question_trunc[:TOKEN_USAGE_QUESTION_LIMIT] + "…"
+    question_trunc = _truncate(question, TOKEN_USAGE_QUESTION_LIMIT)
+    answer_trunc = _truncate(answer, TOKEN_USAGE_ANSWER_LIMIT)
 
     row = [
         now_utc8().strftime("%Y-%m-%d %H:%M:%S"),
@@ -143,10 +151,11 @@ def record_token_usage(user_name: str, chat_type: str, question: str, usage: dic
         int(usage.get("total_tokens", 0) or 0),
         ",".join(usage.get("tools", [])) or "none",
         question_trunc,
+        answer_trunc,
         chat_type or "",
     ]
     payload = json.dumps({
-        "fields": ["时间", "用户", "模型", "输入Token", "输出Token", "总Token", "调用工具", "问题", "会话类型"],
+        "fields": ["时间", "用户", "模型", "输入Token", "输出Token", "总Token", "调用工具", "问题", "回答", "会话类型"],
         "rows": [row],
     }, ensure_ascii=False)
 
@@ -1120,7 +1129,7 @@ def process_event(event: dict):
             log(f"REPLY: {reply[:80]}...")
             send_reply(message_id, reply)
 
-        record_token_usage(sender_name, chat_type, content, token_usage)
+        record_token_usage(sender_name, chat_type, content, reply, token_usage)
 
 
 # =============================================================================

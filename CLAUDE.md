@@ -58,9 +58,9 @@ Config:
 
 ## Token Usage
 
-`record_token_usage()` writes one row to a private Lark Bitable after a reply is sent (via `lark-cli base +record-batch-create --as bot`). A row represents one incoming Feishu event and aggregates all Bedrock Converse calls for that event, including multi-round tool use and relay summarization. Columns: 时间, 用户, 模型, 输入Token, 输出Token, 总Token, 调用工具, 问题, 会话类型.
+`record_token_usage()` writes one row to a private Lark Bitable after a reply is sent (via `lark-cli base +record-batch-create --as bot`). A row represents one incoming Feishu event and aggregates all Bedrock Converse calls for that event, including multi-round tool use and relay summarization. Columns: 时间, 用户, 模型, 输入Token, 输出Token, 总Token, 调用工具, 问题, 回答, 会话类型.
 
-Privacy: the `问题` (question) is truncated to `TOKEN_USAGE_QUESTION_LIMIT` (200) chars before storage, and the CI log prints only aggregate numbers (never the question text), since the repo is public. The bot writes with `edit` permission granted to its `appid` on that Bitable. A write failure only logs a warning and never blocks the reply.
+Privacy: `问题` (question) is truncated to `TOKEN_USAGE_QUESTION_LIMIT` (200) chars and `回答` (answer) to `TOKEN_USAGE_ANSWER_LIMIT` (500) chars before storage; the CI log prints only aggregate numbers (never the question/answer text), since the repo is public. The bot writes with `edit` permission granted to its `appid` on that Bitable. A write failure only logs a warning and never blocks the reply.
 
 Smoke test:
 
